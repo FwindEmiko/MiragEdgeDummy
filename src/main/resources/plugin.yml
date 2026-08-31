@@ -1,0 +1,28 @@
+name: MiragEdgeDummy
+version: '1.0.0'
+main: top.miragedge.dummy.MiragEdgeDummy
+api-version: '1.21'
+prefix: 木人桩
+authors: [ FCelestial, FwindEmiko ]
+description: 训练假人「木人桩」——打桩测伤，护甲附魔全验证
+
+commands:
+  dummy:
+    description: 木人桩管理命令
+    usage: /dummy give <玩家> <数量> | /dummy reload | /dummy list | /dummy remove <uuid> | /dummy info <uuid>
+    aliases: [ 木人桩, dummies ]
+    # 权限由各子命令内部校验：miragedgedummy.give / .reload / .admin（见下方 permissions）
+
+permissions:
+  miragedgedummy.give:
+    description: 给予木人桩物品
+    default: op
+  miragedgedummy.reload:
+    description: 重载插件配置与消息
+    default: op
+  miragedgedummy.admin:
+    description: 管理命令（list/remove/info）
+    default: op
+
+softdepend: [ PlaceholderAPI ]
+loadafter: [ PlaceholderAPI ]

@@ -1,0 +1,31 @@
+# ============================================================
+# 木人桩 MiragEdgeDummy 配置
+# 修改后执行 /dummy reload 生效
+# ============================================================
+
+# 木人桩物品使用的材质（任意 Bukkit 材质名）
+item:
+  material: ARMOR_STAND
+
+# 通知设置
+notifications:
+  # 伤害数值保留的小数位数
+  precision: 1
+  # 伤害结果显示方式：actionbar（推荐，基岩版兼容）或 chat
+  mode: actionbar
+
+# 木人桩显示名（支持 & 颜色代码）
+npc-name: "&e木人桩"
+
+# 是否显示名字（悬浮标签）
+npc-name-visible: true
+
+# 是否需要潜行右键才能拾取木人桩
+removal:
+  require-sneak: true
+
+# 只有放置者本人才能拾取（false 时任何人都能捡）
+allow-non-owners-break: false
+
+# 调试模式（生产环境保持 false）
+debug: false

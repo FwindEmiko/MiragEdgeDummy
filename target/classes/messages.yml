@@ -1,0 +1,45 @@
+# ============================================================
+# 木人桩 MiragEdgeDummy 消息文件
+# 颜色代码使用 & 前缀，{占位符} 运行时替换
+# 全部中文，禁 emoji（基岩版渲染为乱码）
+# ============================================================
+
+# 木人桩物品的显示名与说明
+item:
+  name: "&6木人桩"
+  lore:
+    - "&7右键地面放置一个木人桩"
+    - "&7木人桩可以穿上护甲，测出真实伤害"
+    - "&7潜行右键木人桩可收回"
+
+# 消息区
+messages:
+  # 全局前缀（自动加在所有消息前）
+  global-prefix: "&7[&b木人桩&7]"
+
+  # 每次命中显示（{damage}=伤害数值, {hearts}=对应心数）
+  damage: "&f伤害: &c{damage} &f(&c{hearts} ❤&f)"
+
+  # 放置 / 收回
+  placed: "&a已放置木人桩"
+  removed: "&a已收回木人桩"
+  not-owner: "&c这个木人桩不是你的，不能收回"
+
+  # 装备相关
+  equipped: "&a已装备 {item}"
+  retrieved: "&a已取下 {item}"
+
+  # 命令相关
+  no-permission: "&c你没有权限这样做"
+  invalid-usage: "&c用法: /dummy give <玩家> <数量> | /dummy reload"
+  invalid-amount: "&c数量必须是正整数"
+  player-not-found: "&c找不到该玩家"
+  gave-item: "&a已给 {player} {amount} 个木人桩"
+  received-item: "&a你获得了 {amount} 个木人桩"
+  reload-success: "&a配置已重载"
+  list-header: "&e现存木人桩: {count} 个"
+  list-item: "&7- &e{id} &7主人=&e{owner} &7世界=&e{world}"
+  no-such-npc: "&c没有找到 id 为 {id} 的木人桩"
+  info-header: "&e木人桩 {id} 信息:"
+  remove-success: "&a已删除木人桩 {id}"
+  remove-failed: "&c删除木人桩 {id} 失败"
