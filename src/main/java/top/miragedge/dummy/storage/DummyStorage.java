@@ -38,10 +38,20 @@ public class DummyStorage {
 
     /**
      * 保存记录：内存立即登记 + 异步落盘单文件。
+     * 注意：插件禁用后不能注册异步任务，onDisable 场景请用 {@link #saveRecordSync}。
      */
     public void saveRecord(DummyRecord record) {
         records.put(record.uuid(), record);
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> writeFile(record));
+    }
+
+    /**
+     * 同步保存记录（onDisable 用）：插件禁用后 CraftScheduler 拒绝注册新任务，
+     * 故此处直接同步写盘（关服阶段允许短暂 IO）。
+     */
+    public void saveRecordSync(DummyRecord record) {
+        records.put(record.uuid(), record);
+        writeFile(record);
     }
 
     /**

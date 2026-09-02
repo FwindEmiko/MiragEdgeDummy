@@ -26,7 +26,10 @@ import java.util.Map;
  * 这里计算的是「玩家打在人形目标上会造成的真实伤害」，用于 ActionBar 显示。</p>
  *
  * <p>详细公式见 docs/TECHNICAL-REPORT.md §6 与 docs/DEVELOPMENT.md §6。</p>
+ * <p>注意：Enchantment.getByKey（since 1.20.6）与 DamageCause.HOT_FLOOR 在 26.2 均无非弃用替代
+ * （注册表查询即官方推荐用法），此类「枚举常量 → 注册表」迁移的告警在类级统一抑制。</p>
  */
+@SuppressWarnings("deprecation")
 public final class DamageCalculator {
 
     private static Map<Material, Integer> ARMOR_DEFENSE = new HashMap<>();
@@ -66,19 +69,8 @@ public final class DamageCalculator {
 
         double damage = baseDamage;
 
-        // 2. 读取 4 件盔甲：护甲值 totalArmor + 韧性 totalToughness（查不到算 0）
-        int totalArmor = armorValue(equipment.getHelmet())
-                + armorValue(equipment.getChestplate())
-                + armorValue(equipment.getLeggings())
-                + armorValue(equipment.getBoots());
-        double totalToughness = toughnessValue(equipment.getHelmet())
-                + toughnessValue(equipment.getChestplate())
-                + toughnessValue(equipment.getLeggings())
-                + toughnessValue(equipment.getBoots());
-
-        // 3. 护甲减伤（原版公式）
-        double defense = Math.min(20, Math.max(totalArmor / 5.0, totalArmor - damage / (2.0 + totalToughness / 4.0)));
-        damage *= (1 - defense / 25.0);
+        // 2+3. 护甲减伤（原版公式）
+        damage = applyArmorReduction(damage, totalArmor(equipment), totalToughness(equipment));
 
         // 4. 保护附魔：四件盔甲按类型加权累加 totalProt，封顶 20 点，每点减 4%
         double totalProt = protectionLevel(equipment.getHelmet(), damageType)
@@ -90,6 +82,52 @@ public final class DamageCalculator {
 
         // 5. 不为负
         return Math.max(0, damage);
+    }
+
+    /**
+     * 仅套用护甲（+韧性）减伤，不做保护附魔减伤。
+     *
+     * <p>真实受击伤害场景：若服务端已按保护附魔结算过（DamageModifier.MAGIC 非零），
+     * 而护甲属性未结算（盔甲架装备属性不生效），则只需补护甲减伤，避免保护被重复计算。</p>
+     */
+    public static double applyArmorOnly(Entity entity, double baseDamage) {
+        if (!(entity instanceof LivingEntity)) {
+            return baseDamage;
+        }
+        EntityEquipment equipment = ((LivingEntity) entity).getEquipment();
+        if (equipment == null) {
+            return baseDamage;
+        }
+        return Math.max(0, applyArmorReduction(baseDamage, totalArmor(equipment), totalToughness(equipment)));
+    }
+
+    /**
+     * 原版护甲减伤公式：{@code defense = min(20, max(armor/5, armor - damage/(2+toughness/4)))}，
+     * 减伤比例 = defense/25。
+     */
+    private static double applyArmorReduction(double damage, int totalArmor, double totalToughness) {
+        double defense = Math.min(20, Math.max(totalArmor / 5.0, totalArmor - damage / (2.0 + totalToughness / 4.0)));
+        return damage * (1 - defense / 25.0);
+    }
+
+    /**
+     * 读取 4 件盔甲总护甲值（查不到算 0）。
+     */
+    private static int totalArmor(EntityEquipment equipment) {
+        return armorValue(equipment.getHelmet())
+                + armorValue(equipment.getChestplate())
+                + armorValue(equipment.getLeggings())
+                + armorValue(equipment.getBoots());
+    }
+
+    /**
+     * 读取 4 件盔甲总韧性值（查不到算 0）。
+     */
+    private static double totalToughness(EntityEquipment equipment) {
+        return toughnessValue(equipment.getHelmet())
+                + toughnessValue(equipment.getChestplate())
+                + toughnessValue(equipment.getLeggings())
+                + toughnessValue(equipment.getBoots());
     }
 
     /**
@@ -125,7 +163,13 @@ public final class DamageCalculator {
             base += Math.min(50.0, player.getFallDistance() * 5.0);
         }
 
-        return base;
+        // 攻击冷却因子（0.0=刚攻击完 ~ 1.0=蓄满）：让未蓄满力的攻击显示更低伤害。
+        // 主路径（真实 EntityDamageEvent）的 BASE 已由服务端按冷却结算，此兜底路径需手动补齐，
+        // 否则「冷却没满」与「满蓄力」的伤害显示会一样（对应问题：不等冷却满伤害相同）。
+        // getAttackCooldown() 为 HumanEntity 方法（paper-api 26.2 已核验），返回 0.0~1.0。
+        float cooldown = player.getAttackCooldown();
+        double factor = Math.max(0.0f, Math.min(1.0f, cooldown));
+        return base * factor;
     }
 
     /**

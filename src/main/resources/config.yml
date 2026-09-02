@@ -13,6 +13,16 @@ notifications:
   precision: 1
   # 伤害结果显示方式：actionbar（推荐，基岩版兼容）或 chat
   mode: actionbar
+  # 命中读数是否附带 CPS（每秒攻击次数，最近 1 秒滑动窗口）
+  show-cps: true
+  # 攻击未蓄满力时，命中读数是否附带蓄力百分比（直观展示冷却对伤害的影响）
+  show-cooldown: true
+
+# 假人底层实体类型：
+#   player（默认）—— 真实玩家 NPC（真 Player 实体，有皮肤/身体/装备显示；不在玩家列表/不占 Tab/不被存档）。
+#                    需要服务端 NMS 反射支持（Paper/Leaf 26.2 已验证思路）；生成失败自动回退 armor-stand。
+#   armor-stand  —— 传统盔甲架 + 皮肤头颅
+dummy-entity-type: player
 
 # 训练假人显示名（支持 & 颜色代码）
 npc-name: "&e训练假人"
@@ -20,12 +30,17 @@ npc-name: "&e训练假人"
 # 是否显示名字（悬浮标签）
 npc-name-visible: true
 
+# 假人皮肤：填玩家名时为假人装备对应玩家的皮肤头颅（占用头盔槽，之后无法再装备头盔类物品）。
+# 留空（""）则不启用。皮肤解析：优先使用已缓存的离线配置，缺失时异步向 Mojang/皮肤系统解析，
+# 对接服务器现有的离线皮肤系统（如 skinsrestorer 等挂接 PlayerProfile 的插件可自动生效）。
+npc-skin: "FwindEmi"
+
 # 是否需要潜行右键才能拾取训练假人
 removal:
   require-sneak: true
 
 # 只有放置者本人才能拾取（false 时任何人都能捡）
-allow-non-owners-break: false
+allow-non-owners-break: true
 
 # 调试模式（生产环境保持 false）
 debug: false

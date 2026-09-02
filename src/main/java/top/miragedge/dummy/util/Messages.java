@@ -83,6 +83,11 @@ public class Messages {
         return result;
     }
 
+    /**
+     * ChatColor（legacy 字符串体系）在 26.2 已弃用，但本项目消息体系统一为 & 颜色码字符串
+     * （与 messages.yml、服务器现有插件风格一致），换 Adventure Component 需全链路重构，故有意沿用。
+     */
+    @SuppressWarnings("deprecation")
     public static String colorize(String s) {
         if (s == null) {
             return "";

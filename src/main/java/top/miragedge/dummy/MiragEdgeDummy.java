@@ -68,13 +68,8 @@ public final class MiragEdgeDummy extends JavaPlugin {
             this.getServer().getScheduler().runTaskLater(this, this.dummyManager::cleanupOrphans, 60L);
         }, 100L);
 
-        // 5. 每 tick 保持训练假人静止（防击退/熄灭）
-        this.getServer().getScheduler().runTaskTimer(this, () -> this.dummyManager.getAllDummies().values().forEach(dummy -> {
-            if (dummy.getEntity() != null && !dummy.getEntity().isDead()) {
-                dummy.getEntity().setVelocity(new org.bukkit.util.Vector(0, 0, 0));
-                dummy.getEntity().setFireTicks(0);
-            }
-        }), 1L, 1L);
+        // 5. 每 tick 物理循环：击退弹簧回位 + 静止保持 + 防熄灭（见 DummyManager.tickDummies）
+        this.getServer().getScheduler().runTaskTimer(this, () -> this.dummyManager.tickDummies(), 1L, 1L);
 
         // 6. 每 5 分钟清理监听器防抖表，防止无玩家活动时长期不清理
         this.getServer().getScheduler().runTaskTimer(this, () -> this.dummyListener.pruneMaps(), 6000L, 6000L);
@@ -84,12 +79,21 @@ public final class MiragEdgeDummy extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        // 每个阶段独立 try/catch：一处异常不影响后续清理（saveAll 失败也要保证 shutdown 落盘）
         if (this.dummyManager != null) {
-            this.dummyManager.cancelAllHitAnimations();
-            this.dummyManager.saveAll();
+            try {
+                this.dummyManager.cancelAllHitAnimations();
+                this.dummyManager.saveAll();
+            } catch (RuntimeException e) {
+                getLogger().warning("关服保存训练假人时异常: " + e.getMessage());
+            }
         }
         if (this.storage != null) {
-            this.storage.shutdown();
+            try {
+                this.storage.shutdown();
+            } catch (RuntimeException e) {
+                getLogger().warning("关服清理训练假人存储时异常: " + e.getMessage());
+            }
         }
         instance = null;
     }

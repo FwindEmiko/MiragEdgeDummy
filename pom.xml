@@ -6,16 +6,16 @@
 
     <groupId>top.miragedge</groupId>
     <artifactId>miragedgedummy</artifactId>
-    <version>1.0</version>
+    <version>1.2</version>
     <packaging>jar</packaging>
 
-    <name>[M][训练假人]MiragEdgeDummy</name>
+    <name>MiragEdgeDummy</name>
     <description>训练假人——打桩测伤，护甲附魔全验证</description>
 
     <properties>
-        <maven.compiler.release>21</maven.compiler.release>
+        <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <paper.version>1.21.4-R0.1-SNAPSHOT</paper.version>
+        <paper.version>26.2.build.119-stable</paper.version>
     </properties>
 
     <repositories>
@@ -35,12 +35,15 @@
     </dependencies>
 
     <build>
-        <finalName>${project.name}</finalName>
+        <finalName>[M][训练假人]MiragEdgeDummy</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
+                <configuration>
+                    <showDeprecation>true</showDeprecation>
+                </configuration>
             </plugin>
         </plugins>
     </build>

@@ -22,6 +22,9 @@ messages:
   # 例外：伤害读数不加全局前缀（ActionBar 高频刷新，短文案更清爽，与 F2 示例一致）
   # ❤ 为 U+2764（重黑心），基岩版默认字体原生支持、Geyser 可正常显示，属允许的白名单符号
   damage: "&f伤害: &c{damage} &f(&c{hearts} ❤&f)"
+  # 伤害读数附加信息（同样不加全局前缀）：攻击蓄力百分比 / CPS
+  cooldown: "&7蓄力: &e{percent}&7%"
+  cps: "&7CPS: &a{cps}"
 
   # 放置 / 收回
   placed: "&7&o已放置训练假人"
@@ -54,6 +57,7 @@ messages:
   invalid-uuid: "&7&o无效的训练假人ID，应为UUID格式"
   inventory-full: "&7&o背包已满，多余物品已掉落在原地"
   info-owner: "&7&o主人: {owner}"
+  skin-helmet-blocked: "&7&o已启用假人皮肤，无法在头部装备物品"
   info-world: "&7&o世界: {world}"
   info-location: "&7&o位置: {x}, {y}, {z}"
   info-facing: "&7&o朝向: {yaw}° / {pitch}°"

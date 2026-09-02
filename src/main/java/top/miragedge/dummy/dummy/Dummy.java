@@ -2,22 +2,35 @@ package top.miragedge.dummy.dummy;
 
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Player;
 import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.ItemStack;
 
 import java.util.UUID;
 
 /**
- * 训练假人实体封装：包一层 {@link ArmorStand}，持有 id / 主人。
+ * 训练假人实体封装：包一层 {@link LivingEntity}（盔甲架 或 假人玩家 NPC），
+ * 持有 id / 主人 / 出生锚点。
  *
- * <p>零依赖实现（不需要 Citizens）：假人 = 不可击退的静态盔甲架。</p>
+ * <p>零依赖实现（不需要 Citizens）：</p>
+ * <ul>
+ *   <li>{@code dummy-entity-type: player}（默认，用户要求）—— 生成真实玩家 NPC
+ *       （{@link PlayerNpcFactory}，真 Player 实体、有皮肤/身体/装备显示），失败自动回退盔甲架；</li>
+ *   <li>{@code dummy-entity-type: armor-stand} —— 传统盔甲架 + 皮肤头颅。</li>
+ * </ul>
  *
  * <p>实现要点（见 docs/DEVELOPMENT.md §4）：</p>
  * <ul>
  *   <li>PDC 标记：dummy=1（标识）、owner=UUID字符串、id=UUID字符串（三个 NamespacedKey）</li>
- *   <li>静态配置：无重力/无基座/有手臂/可见/无敌/不被卸载/持久</li>
+ *   <li>关键：{@code setInvulnerable(false)} —— 只有可受伤，服务端才会为攻击产生真实
+ *       {@code EntityDamageByEntityEvent}，从而能捕获包括高级附魔（Aiyatsbus/EcoEnchants 等）在内
+ *       的完整真实伤害；伤害由监听器在 MONITOR 阶段统一 {@code setDamage(0)} 抵消，假人不会掉血。
+ *       高血量（1024）作为兜底：任何未被抵消的伤害也不至于让假人瞬间死亡丢装备。</li>
  *   <li>装备槽位：盔甲 + 主手 + 副手</li>
  * </ul>
  */
@@ -25,12 +38,15 @@ public class Dummy {
 
     private final UUID id;
     private final UUID owner;
-    private ArmorStand stand;
+    /** 出生锚点：物理击退（弹簧回位）的参考点，构造时固定。 */
+    private final Location anchor;
+    private LivingEntity entity;
 
-    public Dummy(UUID id, UUID owner, ArmorStand stand) {
+    public Dummy(UUID id, UUID owner, LivingEntity entity) {
         this.id = id;
         this.owner = owner;
-        this.stand = stand;
+        this.entity = entity;
+        this.anchor = entity != null ? entity.getLocation().clone() : null;
     }
 
     public UUID getId() {
@@ -41,43 +57,78 @@ public class Dummy {
         return owner;
     }
 
+    public LivingEntity getLiving() {
+        return entity;
+    }
+
+    /**
+     * 兼容旧调用：若底层是盔甲架则返回，否则返回 null。
+     */
     public ArmorStand getStand() {
-        return stand;
+        return entity instanceof ArmorStand stand ? stand : null;
     }
 
     public Entity getEntity() {
-        return stand;
+        return entity;
+    }
+
+    public boolean isPlayerNpc() {
+        return entity instanceof Player;
     }
 
     public Location getLocation() {
-        return stand != null ? stand.getLocation() : null;
+        return entity != null ? entity.getLocation() : null;
+    }
+
+    public Location getAnchor() {
+        return anchor;
     }
 
     public boolean isValid() {
-        return stand != null && stand.isValid() && !stand.isDead();
+        return entity != null && entity.isValid() && !entity.isDead();
     }
 
     // ============ 实现 ============
 
     /**
-     * 对盔甲架应用静态配置（重力/基座/手臂/可见/无敌/持久等）。
+     * 对底层实体应用静态配置（重力/可受伤/高血量/持久等），按实体类型区分。
      */
     public void configureStatic() {
-        stand.setGravity(false);
-        stand.setBasePlate(false);
-        stand.setArms(true);
-        stand.setSmall(false);
-        stand.setVisible(true);
-        stand.setInvulnerable(true);
-        stand.setRemoveWhenFarAway(false);
-        stand.setPersistent(true);
+        if (entity == null) {
+            return;
+        }
+        // 盔甲架独有外观配置
+        if (entity instanceof ArmorStand stand) {
+            stand.setGravity(false);
+            stand.setBasePlate(false);
+            stand.setArms(true);
+            stand.setSmall(false);
+            stand.setVisible(true);
+        }
+        // 统一：无重力（物理回弹由弹簧-阻尼驱动）、可受伤（真实伤害事件）、不被卸载
+        entity.setGravity(false);
+        // 允许真实受击（见类注释）：不设无敌，才能捕获含高级附魔在内的完整真实伤害。
+        entity.setInvulnerable(false);
+        entity.setRemoveWhenFarAway(false);
+        // 持久化策略：
+        //  盔甲架 → 持久（随区块正常存档，重启后由 findExistingById 复用）；
+        //  玩家 NPC → 不持久（假玩家带连接字段不适合写世界存档；区块卸载即清除，
+        //            由区块加载事件 restoreChunk 从存储记录重建）。
+        entity.setPersistent(entity instanceof ArmorStand);
+        // 高血量兜底：伤害在 MONITOR 已抵消，此处仅防意外致死（/kill 等绕过伤害事件的途径）。
+        // setMaxHealth(double) 在 26.2 已弃用（since 1.20.6），改用属性 API 设置基础值。
+        AttributeInstance maxHealthAttr = entity.getAttribute(Attribute.MAX_HEALTH);
+        if (maxHealthAttr != null) {
+            maxHealthAttr.setBaseValue(1024);
+        }
+        entity.setHealth(1024);
     }
 
     /**
      * 设置装备。slot 参考 {@link EquipmentSlot}。
      */
     public void setEquipment(EquipmentSlot slot, ItemStack item) {
-        EntityEquipment eq = stand.getEquipment();
+        EntityEquipment eq = entity.getEquipment();
         if (eq == null) {
             return;
         }
@@ -110,7 +161,7 @@ public class Dummy {
      * 读取装备。
      */
     public ItemStack getEquipment(EquipmentSlot slot) {
-        EntityEquipment eq = stand.getEquipment();
+        EntityEquipment eq = entity.getEquipment();
         if (eq == null) {
             return null;
         }
@@ -159,15 +210,18 @@ public class Dummy {
 
     /**
      * 设置自定义名，并指定名称是否可见。
+     * Nameable.setCustomName(String) 在 26.2 已弃用（换 Adventure Component），
+     * 本项目显示名统一走 & 颜色码字符串体系（与 messages.yml 一致），此处有意沿用并抑制告警。
      */
+    @SuppressWarnings("deprecation")
     public void setCustomName(String name, boolean visible) {
-        stand.setCustomName(name);
-        stand.setCustomNameVisible(visible);
+        entity.setCustomName(name);
+        entity.setCustomNameVisible(visible);
     }
 
     public void remove() {
-        if (stand != null) {
-            stand.remove();
+        if (entity != null) {
+            entity.remove();
         }
     }
 
