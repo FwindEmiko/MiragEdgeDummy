@@ -1,4 +1,4 @@
-# MiragEdgeDummy 木人桩 —— 技术报告
+# MiragEdgeDummy 训练假人 —— 技术报告
 
 > 本报告记录：需求来源、反编译分析结论、方案选型决策、架构设计、风险与规避。
 > 面向后续维护者与审查者，回答「为什么这样做」。
@@ -103,7 +103,7 @@ top.miragedge.dummy
 ### 5.2 数据流
 
 ```
-[玩家右键木人桩物品] → PlayerInteractEvent → DummyManager.spawnDummy
+[玩家右键训练假人物品] → PlayerInteractEvent → DummyManager.spawnDummy
       → 生成 ArmorStand + PDC(dummy/owner/id) → Dummy 入 map → DummyStorage 写盘
 
 [玩家攻击假人] → EntityDamageByEntityEvent

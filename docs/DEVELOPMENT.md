@@ -1,4 +1,4 @@
-# MiragEdgeDummy 木人桩 —— 开发文档
+# MiragEdgeDummy 训练假人 —— 开发文档
 
 > 本文档是给「实现 agent」的完整开发说明书。**不要求任何额外上下文**——所有功能需求、交互细节、公式、坑位都在本文档里。按本文档 + 骨架代码完成全部 `TODO` 后，插件即达到可交付状态。
 >
@@ -8,7 +8,7 @@
 
 ## 0. 一句话项目
 
-**木人桩（MiragEdgeDummy）** 是一个训练假人插件：玩家放置一个盔甲架假人，假人穿上护甲后，玩家打它就能测出「面对这套护甲时我的真实伤害是多少」。纯 Paper API，**零外部依赖**（不需要 Citizens / 任何前置），兼容 Geyser 基岩版。
+**训练假人（MiragEdgeDummy）** 是一个训练假人插件：玩家放置一个盔甲架假人，假人穿上护甲后，玩家打它就能测出「面对这套护甲时我的真实伤害是多少」。纯 Paper API，**零外部依赖**（不需要 Citizens / 任何前置），兼容 Geyser 基岩版。
 
 ## 1. 构建环境（必须遵守）
 
@@ -28,21 +28,21 @@
 
 玩家向功能（玩家不依赖命令，全部 GUI/物品交互）：
 
-1. **[F1] 放置**：手持「木人桩」物品右键地面 → 扣 1 个物品，在视线落点上方 1 格生成盔甲架假人。
+1. **[F1] 放置**：手持「训练假人」物品右键地面 → 扣 1 个物品，在视线落点上方 1 格生成盔甲架假人。
 2. **[F2] 挨打显示伤害**：玩家近战/弓箭（含烟花火箭的弹射物）攻击假人 → ActionBar 显示 `伤害: 7.5 (3.7 ❤)`（伤害数值可配置小数位）。
 3. **[F3] 护甲减伤**：假人穿上盔甲后，显示的伤害按原版公式扣除护甲 + 韧性 + 保护附魔。（这是本插件核心卖点。）
 4. **[F4] 穿装备**：手持盔甲/武器右键假人 → 穿到对应槽位（头盔/胸甲/护腿/靴子/主手），消耗手中 1 个物品，换下的旧装备回到背包。
 5. **[F5] 取下装备**：空手右键假人 → 取下最后穿戴的装备（或遍历取一件）回背包。
-6. **[F6] 收回**：潜行右键假人 → 实体移除，木人桩物品回到背包。
+6. **[F6] 收回**：潜行右键假人 → 实体移除，训练假人物品回到背包。
 7. **[F7] 防击退**：假人被打不后退、不燃烧、不受到真实伤害（伤害归零）。
-8. **[F8] 持久化**：放置后重启服务器，木人桩原位恢复（含位置朝向）。
+8. **[F8] 持久化**：放置后重启服务器，训练假人原位恢复（含位置朝向）。
 9. **[F9] 权限控制**：只有放置者本人能收回（可配置 `allow-non-owners-break`）。
 
 管理员向（命令 `/dummy`，权限见 plugin.yml）：
 
-10. **[C1] `/dummy give <玩家> <数量>`**：给玩家木人桩物品（`miragedgedummy.give`）。
+10. **[C1] `/dummy give <玩家> <数量>`**：给玩家训练假人物品（`miragedgedummy.give`）。
 11. **[C2] `/dummy reload`**：重载配置与消息（`miragedgedummy.reload`）。
-12. **[C3] `/dummy list` / `remove <uuid>` / `info <uuid>`**：管理所有木人桩（`miragedgedummy.admin`）。
+12. **[C3] `/dummy list` / `remove <uuid>` / `info <uuid>`**：管理所有训练假人（`miragedgedummy.admin`）。
 
 ## 3. 配置与消息（骨架已写好默认值）
 
@@ -50,7 +50,7 @@
 - `item.material`：物品材质，默认 `ARMOR_STAND`
 - `notifications.precision`：伤害小数位，默认 `1`
 - `notifications.mode`：`actionbar`（推荐，基岩版兼容）或 `chat`
-- `npc-name`：假人显示名，默认 `&e木人桩`
+- `npc-name`：假人显示名，默认 `&e训练假人`
 - `npc-name-visible`：是否显示名字悬浮标签
 - `removal.require-sneak`：是否需要潜行才可收回
 - `allow-non-owners-break`：非主人能否收回
@@ -59,22 +59,22 @@
 **messages.yml**（`Messages` 工具读取）：
 - 全部中文；**禁止 emoji**（基岩版 Geyser 渲染为 `?` 乱码）
 - 玩家向提示正文**灰色斜体** `§7§o`（服务器消息约定，与普通白色消息区分）
-- 前缀 `messages.global-prefix` 自动拼到每条消息前
+- 前缀 messages.global-prefix 自动拼到每条消息前（例外：伤害读数 messages.damage 不加前缀——ActionBar 高频刷新保持短文案，与 §2 F2 示例一致）
 - 占位符 `{damage}` `{hearts}` `{player}` `{amount}` `{id}` `{owner}` `{world}` `{item}` 运行时替换
 
 实现要求：`ConfigManager` 首次启动生成 config.yml 与 messages.yml（`saveDefaultConfig()` + 手动 `saveResource("messages.yml", false)`），reload 时重读磁盘文件（服主改过就以磁盘为准）。
 
-## 4. DummyManager / Dummy —— 木人桩生命周期
+## 4. DummyManager / Dummy —— 训练假人生命周期
 
 ### 4.1 PDC 标记（识别核心，必须一致）
 
-每个木人桩实体打 3 个 PersistentData 标记（NamespacedKey 用插件实例 `new NamespacedKey(plugin, key)`）：
+每个训练假人实体打 3 个 PersistentData 标记（NamespacedKey 用插件实例 `new NamespacedKey(plugin, key)`）：
 
 | Key | 类型 | 内容 |
 |-----|------|------|
-| `dummy` | BYTE | `(byte)1`，标识这是木人桩 |
+| `dummy` | BYTE | `(byte)1`，标识这是训练假人 |
 | `owner` | STRING | 放置者 UUID 字符串 |
-| `id` | STRING | 木人桩自身 UUID 字符串（用于找回 tracker） |
+| `id` | STRING | 训练假人自身 UUID 字符串（用于找回 tracker） |
 
 **放置物品**同样打 `dummy=1` 标记在 ItemMeta 的 PDC 上（用于 F1 识别手中物品）。
 
@@ -93,7 +93,7 @@ stand.setPersistent(true);        // 不因区块卸载消失
 
 ### 4.3 spawnDummy（F1）
 
-1. 校验手中是木人桩物品，`hand.setAmount(hand.getAmount() - 1)` 扣 1。
+1. 校验手中是训练假人物品，`hand.setAmount(hand.getAmount() - 1)` 扣 1。
 2. 落点：`player.getTargetBlockExact(5).getLocation().add(0, 1, 0)`；朝向取玩家 yaw + 180°（假人面向玩家），pitch=0。
 3. `world.spawnEntity(loc, EntityType.ARMOR_STAND)` → 打 PDC 标记 → `configureStatic()` → 建 `Dummy` 入 `dummies` map。
 4. 写 `DummyRecord` 到 storage（含 yaw/pitch）。
@@ -107,6 +107,21 @@ stand.setPersistent(true);        // 不因区块卸载消失
 ### 4.5 saveAll（F8）
 
 onDisable 时遍历 `dummies`，有效实体写 `DummyRecord`（位置四舍五入到合理精度，含 yaw/pitch）。
+
+### 4.6 头顶护甲值显示（增强）
+
+- 假人显示名 = 配置 `npc-name` + ` §7护甲: §a{护甲点数}`（护甲点数 = 四件盔甲 ARMOR_DEFENSE 之和，0 也显示）。
+- 放置、恢复、穿装备、取下装备后都会调用 `DummyManager.updateDisplayName(dummy)` 刷新；
+  护甲值与伤害减伤共用 `DamageCalculator.getTotalArmor` 同一张表，保证一致。
+- 名称可见性仍由 `npc-name-visible` 控制。
+
+### 4.7 受击击退动效（增强）
+
+- 假人受击（`onDamage`）或空挥命中（`onSwing`）时：向攻击反方向瞬移 0.35 格，再用 5 tick 线性插值弹回原位，并播放
+  `Sound.ENTITY_ARMOR_STAND_HIT` 音效。
+- 纯视觉位移（teleport），不改变 F7「假人不被真实击退」语义；连续受击会取消旧动画重新开始；
+  动画任务登记在 `DummyManager#hitAnimations`，onDisable 时 `cancelAllHitAnimations()` 统一取消。
+- 血量符号 `❤`（U+2764）已确认基岩版字体原生支持、Geyser 可正常显示，属 §9.1 白名单。
 
 ## 5. DummyStorage / DummyRecord —— 持久化
 
@@ -159,7 +174,7 @@ damage *= (1 - capped * 0.04)
 事件提供 `event.getDamage(DamageModifier.BASE)`（旧 API 用 try-catch 包住，抛 `NoSuchMethodError|IllegalArgumentException` 时降级 `event.getDamage()`）。若仍 ≤ 0.0001：
 
 ```
-baseDamage = player.getAttribute(Attribute.GENERIC_ATTACK_DAMAGE).getValue()
+baseDamage = player.getAttribute(Attribute.ATTACK_DAMAGE).getValue()   // 1.21.4 已更名，旧名 GENERIC_ATTACK_DAMAGE 已移除
            + 锋利附魔 Sharpness × 1.25
            + 力量药水 Strength × (amplifier+1) × 3
            + 重锤坠落加成（可选，参照 mace 的坠击逻辑）
@@ -193,23 +208,25 @@ baseDamage = player.getAttribute(Attribute.GENERIC_ATTACK_DAMAGE).getValue()
 
 ```
 右键假人:
+  ├─ 交互越权防护：非主人（!allow-non-owners-break）不得 取下/穿上/收回，提示 not-owner{owner}
+  ├─ 手持训练假人物品 且（潜行 或 removal.require-sneak=false）→ 收回（F6）
+  │    实体 remove + 移除 tracker/storage + 归还装备 + 发回物品。
+  │    需潜行而未潜行时提示 sneak-to-remove。
   ├─ 手持物品为空（AIR）→ 取下装备（F5）
   │    取「最后装备槽位」的装备回背包（槽位记在实体 PDC "last_equipped"，见 §7.5）；
   │    无记录则遍历 6 个槽位取第一件。
-  ├─ 手持物品非空 且 潜行 → 收回（F6）
-  │    校验主人（!allow-non-owners-break 时非主人拒绝）；
-  │    实体 remove + 移除 tracker/storage + 发回物品。
-  └─ 手持物品非空 且 未潜行 → 穿装备（F4）
+  └─ 手持其他物品 → 穿装备（F4）
         按物品类型映射槽位（slotFor）→ 穿上；
         旧装备回背包；手中物品 -1。
 ```
 
 **必须处理的边界（PlayerDummies 踩过的坑，全部要在实现中覆盖）**：
-- 潜行收回与空手取下的区分：**空手 + 潜行**应优先走「收回」还是「取下」？参考原实现：收回要潜行，取下不需要。因此**潜行时即使空手也走收回**；空手未潜行才走取下。
+- **收回 vs 取下（UX 优化）**：收回仅当**手持训练假人物品**时才可能触发（配合潜行确认，避免玩家蹲下交互时误收整个假人）；**空手一律走取下**（无论是否潜行），不会误收。原实现「潜行空手=收回」易误触，已改为本规则。
+- **owner 校验**：取下/穿上/收回三条路径统一校验主人（受 `allow-non-owners-break` 控制，默认 false），杜绝陌生玩家扒甲偷装。
 - **副手语义**：玩家副手拿物品、主手空 → 右键应穿副手物品；主手有物时副手交互应忽略（否则双触发）。
 - 取下装备的槽位记录：穿装备时把槽位名（如 `HELMET`）写入实体 PDC `last_equipped`，取下时优先读它——这样「刚穿的护甲」能精准取下，而不是每次取到护腿。
 - 双事件问题：`PlayerInteractAtEntityEvent` 与 `PlayerInteractEntityEvent` 会都触发。**在 At 变体里处理业务，在非 At 变体里直接取消**（`onInteractLegacy`），避免重复执行。
-- 防抖：收回/取下用 `(playerUuid:entityUuid)` 为 key 的 500ms 冷却 map，防止同一个右键触发两次。
+- 防抖：收回/取下用 `(playerUuid:entityUuid)` 为 key 的 500ms 冷却 map（路径标识区分，收回/取下各自独立），防止同一个右键触发两次。
 
 ### 7.5 last_equipped PDC
 
@@ -218,7 +235,7 @@ baseDamage = player.getAttribute(Attribute.GENERIC_ATTACK_DAMAGE).getValue()
 
 ### 7.6 空挥补伤害 `onSwing(PlayerAnimationEvent)`
 
-**为什么需要**：盔甲架 `invulnerable` 时部分版本不触发 `EntityDamageByEntityEvent`（或触发但不带真实伤害），导致空手/某些攻击打假人没反馈。参考原实现用射线检测兜底：
+**为什么需要**：盔甲架 `invulnerable` 时部分版本不触发 `EntityDamageByEntityEvent`（或触发但不带真实伤害），导致空手/某些攻击打假人没反馈。参考原实现用射线检测兜底（注意：纯弹射物攻击如弓箭依赖伤害事件路径，建议实服验证 Geyser/基岩端表现）：
 
 1. 非创造模式玩家。
 2. `lastAttackTime` 距今 ≥100ms（避免和真实攻击事件重复）。
@@ -236,8 +253,8 @@ baseDamage = player.getAttribute(Attribute.GENERIC_ATTACK_DAMAGE).getValue()
 
 ## 9. 消息与玩家体验规范（服务器约定，必须遵守）
 
-1. **全中文**，游戏内消息**禁止 emoji**（Geyser 渲染乱码）。
-2. 玩家向提示正文用 **灰色斜体 `§7§o`**。
+1. **全中文**，游戏内消息**禁止 emoji**（Geyser 渲染乱码）。例外：血量符号 `❤`（U+2764）经基岩版字体原生支持、Geyser 验证可正常显示，属于允许的白名单符号。
+2. 玩家向提示正文用 **灰色斜体 §7§o**；例外：命令成功反馈可用 &a（如 reload-success/remove-success）、错误反馈可用 &c（如 invalid-usage），便于管理员区分状态。
 3. 不输出 md 代码块、不搞花哨装饰。
 4. 玩家向功能必须**物品/GUI 交互**，命令仅供管理员（玩家「太笨了让用指令是天方夜谭」——服务器既定规则）。
 5. 物品 lore 用大白话说明用法（骨架 messages.yml 已写示例）。
@@ -251,13 +268,13 @@ baseDamage = player.getAttribute(Attribute.GENERIC_ATTACK_DAMAGE).getValue()
 
 ## 11. 交付验收清单（实现 agent 自查后打勾）
 
-- [ ] `mvn.cmd compile` 通过，零 error（warning 可容忍）。
-- [ ] 打包 `mvn.cmd package` 产出 `target/MiragEdgeDummy.jar`。
-- [ ] 阅读代码自查：无未完成的 TODO（除了刻意保留的可选项）。
-- [ ] 逻辑自查：放置→扣物品→生成假人；攻击→ActionBar 伤害；穿甲→显示减伤后的伤害；空手取下→回背包；潜行收回→回物品；重启→恢复原位。
-- [ ] 边界自查：副手交互不双触发；潜行空手=收回不误取；非主人不能收回（默认配置）；假人不被火烧/击退。
-- [ ] 消息自查：全部中文、无 emoji、前缀正确、占位符替换正确。
-- [ ] 对照 §2 功能清单 1-12 逐条确认。
+- [x] `mvn compile` 通过（JDK21 + paper-api 1.21.4 离线），零 error（warning 为文档指定的旧式 API 用法，可容忍）。
+- [x] 打包 `mvn package` 产出 `target/MiragEdgeDummy.jar`。
+- [x] 阅读代码自查：无未完成的 TODO/FIXME。
+- [x] 逻辑自查：放置→扣物品→生成假人；攻击→ActionBar 伤害；穿甲→显示减伤后的伤害；空手取下→回背包（头顶护甲值实时刷新）；潜行+手持假人物品→收回；重启→恢复原位。
+- [x] 边界自查：副手交互不双触发；空手一律取下（仅手持假人物品才可收回，杜绝潜行误触）；非主人不能 取下/穿上/收回（默认配置）；假人不被火烧/击退（受击动画为纯视觉 teleport，不破坏真实位置）。
+- [x] 消息自查：全部中文、仅有白名单 ❤、前缀正确、占位符替换正确（damage 例外不加前缀）。
+- [x] 对照 §2 功能清单 1-12 逐条确认（另含头顶护甲显示 / 受击动效 / kind emoji 三项增强）。
 
 ## 12. 部署说明（给汐汐酱）
 

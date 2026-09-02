@@ -11,7 +11,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 木人桩持久化：data/&lt;uuid&gt;.yml 单文件存储。
+ * 训练假人持久化：data/&lt;uuid&gt;.yml 单文件存储。
  *
  * <p>实现要点（见 docs/DEVELOPMENT.md §5）：</p>
  * <ul>
@@ -31,7 +31,7 @@ public class DummyStorage {
         this.plugin = plugin;
         this.dataDir = new File(plugin.getDataFolder(), "data");
         if (!dataDir.exists() && !dataDir.mkdirs()) {
-            plugin.getLogger().warning("无法创建木人桩数据目录: " + dataDir.getAbsolutePath());
+            plugin.getLogger().warning("无法创建训练假人数据目录: " + dataDir.getAbsolutePath());
         }
         loadAll();
     }
@@ -50,9 +50,12 @@ public class DummyStorage {
     public void remove(UUID uuid) {
         records.remove(uuid);
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
-            File f = new File(dataDir, uuid + ".yml");
-            if (f.exists() && !f.delete()) {
-                plugin.getLogger().warning("无法删除木人桩文件: " + f.getAbsolutePath());
+            // 删除同样进入写盘锁，避免与 saveRecord 异步写/shutdown 同步写竞争
+            synchronized (writeLock) {
+                File f = new File(dataDir, uuid + ".yml");
+                if (f.exists() && !f.delete()) {
+                    plugin.getLogger().warning("无法删除训练假人文件: " + f.getAbsolutePath());
+                }
             }
         });
     }
@@ -66,14 +69,32 @@ public class DummyStorage {
     }
 
     /**
-     * 关闭前落盘：遍历内存记录同步写入（插件停用阶段允许同步 IO）。
+     * 关闭前落盘：遍历内存记录同步写入（插件停用阶段允许同步 IO），
+     * 并清理「已删除但异步删文件任务尚未执行」的残留文件，避免下次启动复活。
      */
     public void shutdown() {
+        // 取消本插件尚未执行的异步写/删任务，避免与下方同步落盘并发写同一文件
+        plugin.getServer().getScheduler().cancelTasks(plugin);
         for (DummyRecord record : records.values()) {
             try {
                 writeFile(record);
             } catch (RuntimeException e) {
-                plugin.getLogger().warning("关闭时保存木人桩 " + record.uuid() + " 失败: " + e.getMessage());
+                plugin.getLogger().warning("关闭时保存训练假人 " + record.uuid() + " 失败: " + e.getMessage());
+            }
+        }
+        // 删除不在内存记录中的残留文件（对应已被 remove 的训练假人）
+        File[] files = dataDir.listFiles((dir, name) -> name.endsWith(".yml"));
+        if (files == null) {
+            return;
+        }
+        for (File file : files) {
+            try {
+                UUID uuid = UUID.fromString(file.getName().substring(0, file.getName().length() - 4));
+                if (!records.containsKey(uuid) && file.exists() && !file.delete()) {
+                    plugin.getLogger().warning("关闭时无法删除残留训练假人文件: " + file.getAbsolutePath());
+                }
+            } catch (IllegalArgumentException ignored) {
+                // 非 UUID 文件名：保留（不属于本插件数据，不误删）
             }
         }
     }
@@ -101,7 +122,7 @@ public class DummyStorage {
 
                 String world = cfg.getString("world");
                 if (world == null || world.isEmpty()) {
-                    plugin.getLogger().warning("跳过木人桩 " + uuid + "：缺少 world");
+                    plugin.getLogger().warning("跳过训练假人 " + uuid + "：缺少 world");
                     continue;
                 }
 
@@ -110,10 +131,14 @@ public class DummyStorage {
                 try {
                     owner = UUID.fromString(ownerStr);
                 } catch (Exception e) {
-                    plugin.getLogger().warning("跳过木人桩 " + uuid + "：非法 owner '" + ownerStr + "'");
+                    plugin.getLogger().warning("跳过训练假人 " + uuid + "：非法 owner '" + ownerStr + "'");
                     continue;
                 }
 
+                if (!cfg.contains("x") || !cfg.contains("y") || !cfg.contains("z")) {
+                    plugin.getLogger().warning("跳过训练假人 " + uuid + "：缺少坐标字段");
+                    continue;
+                }
                 double x = cfg.getDouble("x");
                 double y = cfg.getDouble("y");
                 double z = cfg.getDouble("z");
@@ -123,7 +148,7 @@ public class DummyStorage {
 
                 records.put(uuid, new DummyRecord(uuid, owner, world, x, y, z, yaw, pitch, displayName));
             } catch (Exception e) {
-                plugin.getLogger().warning("加载木人桩文件 " + file.getName() + " 失败: " + e.getMessage());
+                plugin.getLogger().warning("加载训练假人文件 " + file.getName() + " 失败: " + e.getMessage());
             }
         }
     }
@@ -132,6 +157,12 @@ public class DummyStorage {
      * 写单文件。坐标四舍五入到两位小数，避免重启后位置抖动。
      */
     private void writeFile(DummyRecord record) {
+        synchronized (writeLock) {
+            writeFileLocked(record);
+        }
+    }
+
+    private void writeFileLocked(DummyRecord record) {
         try {
             YamlConfiguration cfg = new YamlConfiguration();
             cfg.set("uuid", record.uuid().toString());
@@ -148,11 +179,17 @@ public class DummyStorage {
             File f = new File(dataDir, record.uuid() + ".yml");
             cfg.save(f);
         } catch (IOException e) {
-            plugin.getLogger().warning("写入木人桩 " + record.uuid() + " 失败: " + e.getMessage());
+            plugin.getLogger().warning("写入训练假人 " + record.uuid() + " 失败: " + e.getMessage());
         }
     }
 
     private static double round(double v) {
         return Math.round(v * 100.0D) / 100.0D;
     }
+
+    /**
+     * 写盘锁：异步写（saveRecord/remove）与 onDisable 同步写（shutdown）可能并发写同一文件，
+     * 用全局锁串行化所有文件写入，避免出现撕裂的 yml（内容低频，锁开销可忽略）。
+     */
+    private final Object writeLock = new Object();
 }

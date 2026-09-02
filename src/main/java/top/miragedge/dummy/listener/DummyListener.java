@@ -1,6 +1,6 @@
 package top.miragedge.dummy.listener;
 
-import org.bukkit.GameMode;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -34,11 +34,11 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 木人桩全部交互逻辑。
+ * 训练假人全部交互逻辑。
  *
  * <p>事件矩阵（详见 docs/DEVELOPMENT.md §7）：</p>
  * <ul>
- *   <li>{@link #onPlace} —— 手持木人桩物品右键地面 → 放置</li>
+ *   <li>{@link #onPlace} —— 手持训练假人物品右键地面 → 放置</li>
  *   <li>{@link #onDamage} —— 攻击假人 → 伤害归零 + 计算真实伤害 ActionBar 显示</li>
  *   <li>{@link #onInteract} —— 右键假人：空手=取下装备 / 手持=穿装备 / 潜行=收回</li>
  *   <li>{@link #onSwing} —— 空挥补伤害显示（解决假人无敌不掉血导致事件缺失问题）</li>
@@ -56,6 +56,8 @@ public class DummyListener implements Listener {
     private final Map<String, Long> lastSwing = new ConcurrentHashMap<>();
     // 最后攻击时间：空挥触发伤害显示时用于区分真实动画事件
     private final Map<UUID, Long> lastAttackTime = new ConcurrentHashMap<>();
+    // 上次清理防抖表的时间戳（防止三个 Map 无限增长）
+    private long lastPrune = 0L;
 
     public DummyListener(MiragEdgeDummy plugin, DummyManager dummyManager) {
         this.plugin = plugin;
@@ -103,6 +105,10 @@ public class DummyListener implements Listener {
      */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onDamage(EntityDamageByEntityEvent event) {
+        // 他插件已取消的攻击不处理
+        if (event.isCancelled()) {
+            return;
+        }
         Entity entity = event.getEntity();
         if (!dummyManager.isDummyEntity(entity)) {
             return;
@@ -128,16 +134,25 @@ public class DummyListener implements Listener {
         double baseDamage;
         try {
             baseDamage = event.getDamage(EntityDamageEvent.DamageModifier.BASE);
-        } catch (NoSuchMethodError | IllegalArgumentException e) {
+        } catch (NoSuchMethodError | IllegalArgumentException | UnsupportedOperationException e) {
             baseDamage = event.getDamage();
         }
-        if (baseDamage <= 0.0001) {
+        // 兜底仅用于近战攻击（雪球/鸡蛋等弹射物伤害≈0 时不应误报为近战基础伤害）
+        if (baseDamage <= 0.0001
+                && (event.getCause() == EntityDamageEvent.DamageCause.ENTITY_ATTACK
+                    || event.getCause() == EntityDamageEvent.DamageCause.ENTITY_SWEEP_ATTACK)) {
             baseDamage = DamageCalculator.getPlayerBaseDamage(player);
         }
 
+        // onDamage 是权威显示源（使用事件真实 BASE 伤害）；onSwing 仅在其 <100ms 未命中时兜底。
+        // 若同 tick 内先触发 onSwing 再触发 onDamage，ActionBar 会被 onDamage 的更准确值覆盖。
         double finalDamage = DamageCalculator.calculateDamage(entity, baseDamage, event.getCause());
         sendDamage(player, finalDamage);
         lastAttackTime.put(player.getUniqueId(), System.currentTimeMillis());
+
+        // 受击击退动效：方向取攻击者→假人的水平分量
+        Vector hitDir = entity.getLocation().toVector().subtract(damager.getLocation().toVector());
+        dummyManager.playHitEffect(dummy, hitDir);
     }
 
     // ============ 交互（装备/取下/收回） ============
@@ -174,18 +189,24 @@ public class DummyListener implements Listener {
             active = off;
         }
 
-        // 防抖：同一 玩家+假人 500ms 内只处理一次；处理前先记录
-        String key = player.getUniqueId() + ":" + clicked.getUniqueId();
-        long now = System.currentTimeMillis();
-        Long prevPickup = lastPickup.get(key);
-        if (prevPickup != null && (now - prevPickup) < 500) {
+        // 交互越权防护：取下/穿上/收回均受 allow-non-owners-break 控制，
+        // 非主人不能扒甲/换装/收回（F9 语义统一；默认仅放置者本人可操作装备）
+        boolean allowNonOwners = plugin.getConfigManager().getBoolean("allow-non-owners-break", false);
+        if (!allowNonOwners && !dummyManager.isOwner(clicked, player)) {
+            player.sendMessage(plugin.messages().fmt("messages.not-owner",
+                    "owner", ownerName(dummy)));
             return;
         }
-        lastPickup.put(key, now);
 
-        // 分支顺序（关键）：潜行收回 → 空手取下 → 木人桩物品 → 穿装备
-        if (player.isSneaking()) {
-            removeDummy(player, clicked, dummy);
+        // 分支顺序（UX 优化）：训练假人物品（持手）优先判定收回 → 空手取下 → 穿装备
+        if (dummyManager.isDummyItem(active)) {
+            boolean requireSneak = plugin.getConfigManager().getBoolean("removal.require-sneak", true);
+            if (requireSneak && !player.isSneaking()) {
+                // 需要潜行才可收回：提示
+                player.sendMessage(plugin.messages().fmt("messages.sneak-to-remove"));
+            } else {
+                removeDummy(player, clicked, dummy);
+            }
             return;
         }
 
@@ -194,18 +215,16 @@ public class DummyListener implements Listener {
             return;
         }
 
-        if (dummyManager.isDummyItem(active)) {
-            boolean requireSneak = plugin.getConfigManager().getBoolean("removal.require-sneak", true);
-            if (requireSneak) {
-                player.sendMessage(plugin.messages().fmt("messages.sneak-to-remove"));
-            } else {
-                // 不允许手持木人桩物品穿上：直接走收回逻辑
-                removeDummy(player, clicked, dummy);
-            }
-            return;
-        }
-
         equipItem(player, clicked, dummy, active, main, off, fromMainHand);
+    }
+
+    /**
+     * 假人主人显示名：离线玩家名，查不到则用 UUID。
+     */
+    private String ownerName(Dummy dummy) {
+        String ownerStr = dummy.getOwner().toString();
+        String name = Bukkit.getOfflinePlayer(dummy.getOwner()).getName();
+        return name != null ? name : ownerStr;
     }
 
     /**
@@ -216,6 +235,17 @@ public class DummyListener implements Listener {
         if (dummyManager.isDummyEntity(event.getRightClicked())) {
             event.setCancelled(true);
         }
+    }
+
+    // ============ 世界加载（补恢复） ============
+
+    /**
+     * 世界加载时重试恢复该世界的训练假人（启动 100 tick 时世界可能尚未加载，
+     * restoreAll 幂等：已恢复/已有实体的记录会被跳过，不会重复生成）。
+     */
+    @EventHandler
+    public void onWorldLoad(org.bukkit.event.world.WorldLoadEvent event) {
+        dummyManager.restoreAll();
     }
 
     // ============ 空挥补伤害 ============
@@ -230,12 +260,12 @@ public class DummyListener implements Listener {
             return;
         }
         Player player = event.getPlayer();
-        if (player.getGameMode() == GameMode.CREATIVE) {
-            return;
-        }
+        // 创造模式也允许显示（invulnerable 假人事件可能不触发，管理员/测试也需要反馈）
+        // 注：原方案书 §7.6 仅限非创造，此处为保证创造模式可测伤而放开，仅显示不造成真实伤害
 
         long now = System.currentTimeMillis();
-        // 真实攻击事件 100ms 内，避免空挥重复计算
+        pruneMaps(now);
+        // 真实攻击事件 100ms 内，避免空挥重复计算（onDamage 已在本 tick 或 <100ms 内显示则跳过）
         Long lastHit = lastAttackTime.get(player.getUniqueId());
         if (lastHit != null && (now - lastHit) < 100) {
             return;
@@ -265,10 +295,28 @@ public class DummyListener implements Listener {
             }
             lastSwing.put(swingKey, now);
 
-            double base = DamageCalculator.getPlayerBaseDamage(player);
-            double finalDmg = DamageCalculator.calculateDamage(e, base, EntityDamageEvent.DamageCause.ENTITY_ATTACK);
-            sendDamage(player, finalDmg);
-            lastAttackTime.put(player.getUniqueId(), now);
+            // 延迟 1 tick 显示：给同一次攻击的 onDamage（真实 BASE 伤害）优先机会，
+            // 避免 chat 模式同一击显示两条（估算值 + 真实值）；若 100ms 内 onDamage 已显示则跳过。
+            plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                Long last = lastAttackTime.get(player.getUniqueId());
+                if (last != null && (System.currentTimeMillis() - last) < 100) {
+                    return;
+                }
+                // 实体仍有效才显示，避免 1 tick 内假人被收回/失效时的幽灵伤害
+                Dummy still = dummyManager.getDummyByEntity(e);
+                if (still == null) {
+                    return;
+                }
+                double base = DamageCalculator.getPlayerBaseDamage(player);
+                double finalDmg = DamageCalculator.calculateDamage(e, base, EntityDamageEvent.DamageCause.ENTITY_ATTACK);
+                sendDamage(player, finalDmg);
+                lastAttackTime.put(player.getUniqueId(), System.currentTimeMillis());
+                // 空挥命中同样触发击退动效（方向=玩家视线方向）
+                Dummy hit = dummyManager.getDummyByEntity(e);
+                if (hit != null) {
+                    dummyManager.playHitEffect(hit, player.getEyeLocation().getDirection());
+                }
+            }, 1L);
             break;
         }
     }
@@ -284,6 +332,16 @@ public class DummyListener implements Listener {
             player.sendMessage(plugin.messages().fmt("messages.not-owner"));
             return;
         }
+        // 500ms 防抖：同一 玩家+假人 只处理一次（校验通过后才占用冷却）
+        String key = player.getUniqueId() + ":" + clicked.getUniqueId();
+        long now = System.currentTimeMillis();
+        String dk = "remove:" + key;
+        Long prev = lastPickup.get(dk);
+        if (prev != null && (now - prev) < 500) {
+            return;
+        }
+        lastPickup.put(dk, now);
+
         // 关键决策：removed 消息的唯一来源。
         // 经核对 DummyManager.pickupDummy() 内部已发送 messages.removed，
         // 为避免重复提示，listener 这里不再补发（保持单一来源）。
@@ -295,6 +353,16 @@ public class DummyListener implements Listener {
      * 空手取下装备：优先取 PDC 记录的 last_equipped 槽，否则遍历取第一个有装备的槽。
      */
     private void takeOffEquipment(Player player, Entity clicked, Dummy dummy) {
+        // 500ms 防抖：同一 玩家+假人 只处理一次（与收回路径隔离，避免置信冲突）
+        String key = player.getUniqueId() + ":" + clicked.getUniqueId();
+        long now = System.currentTimeMillis();
+        String dk = "take:" + key;
+        Long prev = lastPickup.get(dk);
+        if (prev != null && (now - prev) < 500) {
+            return;
+        }
+        lastPickup.put(dk, now);
+
         String last = clicked.getPersistentDataContainer()
                 .get(new NamespacedKey(plugin, "last_equipped"), PersistentDataType.STRING);
 
@@ -303,6 +371,11 @@ public class DummyListener implements Listener {
             try {
                 slot = Dummy.EquipmentSlot.valueOf(last);
             } catch (IllegalArgumentException ignored) {
+                slot = null;
+            }
+            // last_equipped 指向的槽已空（如外部改动过假人装备）：清掉过期记录并回退遍历
+            if (slot != null && dummy.getEquipment(slot) == null) {
+                clicked.getPersistentDataContainer().remove(new NamespacedKey(plugin, "last_equipped"));
                 slot = null;
             }
         }
@@ -325,17 +398,22 @@ public class DummyListener implements Listener {
             return;
         }
 
-        // 加入背包，放不下的自然掉落在假人位置
+        // 加入背包，放不下的自然掉落在假人位置（并提示背包满）
         Map<Integer, ItemStack> leftover = player.getInventory().addItem(item);
-        for (ItemStack left : leftover.values()) {
-            clicked.getWorld().dropItemNaturally(clicked.getLocation(), left);
+        if (!leftover.isEmpty()) {
+            for (ItemStack left : leftover.values()) {
+                clicked.getWorld().dropItemNaturally(clicked.getLocation(), left);
+            }
+            player.sendMessage(plugin.messages().fmt("messages.inventory-full"));
         }
         dummy.setEquipment(slot, null);
 
-        // 若取下的正是最近装备的槽，清掉记录
-        if (last != null && last.equals(slot.name())) {
+        // last_equipped 记录已被消费（无论取的是记录槽还是 fallback 槽），一律清除避免残留
+        if (last != null) {
             clicked.getPersistentDataContainer().remove(new NamespacedKey(plugin, "last_equipped"));
         }
+        // 刷新头顶护甲值显示
+        dummyManager.updateDisplayName(dummy);
         player.sendMessage(plugin.messages().fmt("messages.retrieved", "item", displayName(item)));
     }
 
@@ -351,30 +429,60 @@ public class DummyListener implements Listener {
         ItemStack old = dummy.getEquipment(slot);
         dummy.setEquipment(slot, copy);
 
-        // 扣减 1 个来源物品
+        // 扣减 1 个来源物品（显式写回，兼容 getItemInMainHand 返回镜像副本的 API 实现）
         if (fromMainHand) {
             main.setAmount(main.getAmount() - 1);
             if (main.getAmount() <= 0) {
                 player.getInventory().setItemInMainHand(null);
+            } else {
+                player.getInventory().setItemInMainHand(main);
             }
         } else {
             off.setAmount(off.getAmount() - 1);
             if (off.getAmount() <= 0) {
                 player.getInventory().setItemInOffHand(null);
+            } else {
+                player.getInventory().setItemInOffHand(off);
             }
         }
 
-        // 旧装备放回背包，剩余掉落
+        // 旧装备放回背包，剩余掉落（并提示背包满）
         if (old != null) {
             Map<Integer, ItemStack> leftover = player.getInventory().addItem(old);
-            for (ItemStack left : leftover.values()) {
-                clicked.getWorld().dropItemNaturally(clicked.getLocation(), left);
+            if (!leftover.isEmpty()) {
+                for (ItemStack left : leftover.values()) {
+                    clicked.getWorld().dropItemNaturally(clicked.getLocation(), left);
+                }
+                player.sendMessage(plugin.messages().fmt("messages.inventory-full"));
             }
         }
 
         clicked.getPersistentDataContainer().set(
                 new NamespacedKey(plugin, "last_equipped"), PersistentDataType.STRING, slot.name());
+        // 刷新头顶护甲值显示
+        dummyManager.updateDisplayName(dummy);
         player.sendMessage(plugin.messages().fmt("messages.equipped", "item", displayName(copy)));
+    }
+
+    /**
+     * 供主类定时器调用的清理入口。
+     */
+    public void pruneMaps() {
+        pruneMaps(System.currentTimeMillis());
+    }
+
+    /**
+     * 定期清理三个防抖 Map 中超过 60 秒的过期条目，防止长驻内存无限增长。
+     */
+    private void pruneMaps(long now) {
+        if (now - lastPrune < 60_000L) {
+            return;
+        }
+        lastPrune = now;
+        long cutoff = now - 60_000L;
+        lastPickup.entrySet().removeIf(e -> e.getValue() < cutoff);
+        lastSwing.entrySet().removeIf(e -> e.getValue() < cutoff);
+        lastAttackTime.entrySet().removeIf(e -> e.getValue() < cutoff);
     }
 
     /**
@@ -396,10 +504,18 @@ public class DummyListener implements Listener {
      * 物品显示名：有自定义名用显示名，否则用物品类型名。
      */
     private String displayName(ItemStack item) {
-        if (item != null && item.getItemMeta() != null && item.getItemMeta().hasDisplayName()) {
+        if (item == null) {
+            return "";
+        }
+        if (item.getItemMeta() != null && item.getItemMeta().hasDisplayName()) {
             return item.getItemMeta().getDisplayName();
         }
-        return item != null ? item.getType().name() : "";
+        // 优先本地化名（跟随服务端语言/资源包，中文服显示中文），兜底材质枚举名
+        try {
+            return item.getI18NDisplayName();
+        } catch (Throwable ignored) {
+            return item.getType().name();
+        }
     }
 
     // ============ 工具方法 ============
@@ -411,7 +527,9 @@ public class DummyListener implements Listener {
     private Dummy.EquipmentSlot slotFor(ItemStack item) {
         Material m = item.getType();
         String name = m.name();
-        if (name.endsWith("_HELMET") || m == Material.TURTLE_HELMET) {
+        // 头盔类：_HELMET 后缀、海龟壳，以及原版可戴头部的南瓜头/骷髅头/头颅类
+        if (name.endsWith("_HELMET") || m == Material.TURTLE_HELMET
+                || m == Material.CARVED_PUMPKIN || name.endsWith("_HEAD") || name.endsWith("_SKULL")) {
             return Dummy.EquipmentSlot.HELMET;
         }
         if (name.endsWith("_CHESTPLATE")) {

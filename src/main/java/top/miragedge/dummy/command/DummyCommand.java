@@ -95,15 +95,27 @@ public class DummyCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(plugin.messages().fmt("messages.invalid-amount"));
             return;
         }
-        ItemStack item = dummyManager.createDummyItem(amount);
-        Map<Integer, ItemStack> leftover = target.getInventory().addItem(item);
-        for (ItemStack stack : leftover.values()) {
-            target.getWorld().dropItemNaturally(target.getLocation(), stack);
+        // 按物品堆叠上限拆分为多组逐步放入背包（ARMOR_STAND 上限 16，非 64）
+        ItemStack sample = dummyManager.createDummyItem(1);
+        int maxStack = sample.getMaxStackSize();
+        int granted = 0;
+        int remaining = amount;
+        while (remaining > 0) {
+            int part = Math.min(remaining, maxStack);
+            Map<Integer, ItemStack> leftover = target.getInventory().addItem(dummyManager.createDummyItem(part));
+            if (!leftover.isEmpty()) {
+                for (ItemStack stack : leftover.values()) {
+                    target.getWorld().dropItemNaturally(target.getLocation(), stack);
+                }
+                target.sendMessage(plugin.messages().fmt("messages.inventory-full"));
+            }
+            granted += part;
+            remaining -= part;
         }
         sender.sendMessage(plugin.messages().fmt("messages.gave-item",
-                "player", target.getName(), "amount", String.valueOf(amount)));
+                "player", target.getName(), "amount", String.valueOf(granted)));
         target.sendMessage(plugin.messages().fmt("messages.received-item",
-                "amount", String.valueOf(amount)));
+                "amount", String.valueOf(granted)));
     }
 
     private void handleReload(CommandSender sender) {
@@ -154,8 +166,11 @@ public class DummyCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(plugin.messages().fmt("messages.no-such-npc", "id", args[1]));
             return;
         }
-        dummyManager.removeDummy(uuid);
-        sender.sendMessage(plugin.messages().fmt("messages.remove-success", "id", args[1]));
+        if (dummyManager.removeDummy(uuid)) {
+            sender.sendMessage(plugin.messages().fmt("messages.remove-success", "id", args[1]));
+        } else {
+            sender.sendMessage(plugin.messages().fmt("messages.remove-failed", "id", args[1]));
+        }
     }
 
     private void handleInfo(CommandSender sender, String[] args) {
@@ -220,9 +235,12 @@ public class DummyCommand implements CommandExecutor, TabCompleter {
             return result;
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("give")) {
+            String prefix = args[1].toLowerCase();
             List<String> names = new ArrayList<>();
             for (Player p : Bukkit.getOnlinePlayers()) {
-                names.add(p.getName());
+                if (p.getName().toLowerCase().startsWith(prefix)) {
+                    names.add(p.getName());
+                }
             }
             return names;
         }
@@ -230,9 +248,13 @@ public class DummyCommand implements CommandExecutor, TabCompleter {
             return Collections.singletonList("1");
         }
         if (args.length == 2 && (args[0].equalsIgnoreCase("remove") || args[0].equalsIgnoreCase("info"))) {
+            String prefix = args[1].toLowerCase();
             List<String> ids = new ArrayList<>();
             for (DummyRecord record : plugin.getStorage().all()) {
-                ids.add(record.uuid().toString());
+                String id = record.uuid().toString();
+                if (id.toLowerCase().startsWith(prefix)) {
+                    ids.add(id);
+                }
             }
             return ids;
         }

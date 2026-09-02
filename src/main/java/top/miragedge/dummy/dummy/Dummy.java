@@ -10,7 +10,7 @@ import org.bukkit.inventory.ItemStack;
 import java.util.UUID;
 
 /**
- * 木人桩实体封装：包一层 {@link ArmorStand}，持有 id / 主人。
+ * 训练假人实体封装：包一层 {@link ArmorStand}，持有 id / 主人。
  *
  * <p>零依赖实现（不需要 Citizens）：假人 = 不可击退的静态盔甲架。</p>
  *

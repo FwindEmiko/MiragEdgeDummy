@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <name>MiragEdgeDummy</name>
-    <description>训练假人「木人桩」——打桩测伤，护甲附魔全验证</description>
+    <description>MiragEdgeDummy 训练假人——打桩测伤，护甲附魔全验证</description>
 
     <properties>
         <maven.compiler.release>21</maven.compiler.release>

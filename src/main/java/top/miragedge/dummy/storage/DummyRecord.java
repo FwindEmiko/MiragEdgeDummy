@@ -7,13 +7,14 @@ import org.bukkit.World;
 import java.util.UUID;
 
 /**
- * 木人桩持久化记录（不可变 record）。
+ * 训练假人持久化记录（不可变 record）。
  *
  * <p>对应 data/&lt;uuid&gt;.yml 单文件存储。</p>
  *
  * <p>实现要点（见 docs/DEVELOPMENT.md §5）：</p>
  * <ul>
- *   <li>保存：uuid/owner/world/x/y/z/yaw/pitch/displayName/装备(可选)</li>
+ *   <li>保存：uuid/owner/world/x/y/z/yaw/pitch/displayName</li>
+ *   （注：装备持久化按技术报告 §8.4 有意不做，如需请后续版本在 DummyRecord 增加装备字段）</li>
  *   <li>world 为 null 时禁止保存（避免写死占位世界名，参考 FE_PVP 教训）</li>
  *   <li>位置需四舍五入到合理精度，避免重启后抖动</li>
  * </ul>

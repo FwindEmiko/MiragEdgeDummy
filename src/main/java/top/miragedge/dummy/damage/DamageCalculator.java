@@ -29,8 +29,8 @@ import java.util.Map;
  */
 public final class DamageCalculator {
 
-    private static final Map<Material, Integer> ARMOR_DEFENSE = new HashMap<>();
-    private static final Map<Material, Double> ARMOR_TOUGHNESS = new HashMap<>();
+    private static Map<Material, Integer> ARMOR_DEFENSE = new HashMap<>();
+    private static Map<Material, Double> ARMOR_TOUGHNESS = new HashMap<>();
 
     /**
      * 1.21 关键：Enchantment 一律走注册表 {@link Enchantment#getByKey} 查询，
@@ -129,6 +129,40 @@ public final class DamageCalculator {
     }
 
     /**
+     * 获取实体当前穿着的四件盔甲的总护甲点数（供假人头顶显示，与减伤公式共用同一张表）。
+     */
+    public static int getTotalArmor(Entity entity) {
+        if (!(entity instanceof LivingEntity living)) {
+            return 0;
+        }
+        EntityEquipment equipment = living.getEquipment();
+        if (equipment == null) {
+            return 0;
+        }
+        return armorValue(equipment.getHelmet())
+                + armorValue(equipment.getChestplate())
+                + armorValue(equipment.getLeggings())
+                + armorValue(equipment.getBoots());
+    }
+
+    /**
+     * 获取实体当前穿着的四件盔甲的总韧性（供头顶显示与减伤参考）。
+     */
+    public static double getTotalToughness(Entity entity) {
+        if (!(entity instanceof LivingEntity living)) {
+            return 0;
+        }
+        EntityEquipment equipment = living.getEquipment();
+        if (equipment == null) {
+            return 0;
+        }
+        return toughnessValue(equipment.getHelmet())
+                + toughnessValue(equipment.getChestplate())
+                + toughnessValue(equipment.getLeggings())
+                + toughnessValue(equipment.getBoots());
+    }
+
+    /**
      * 单件盔甲护甲值；null/AIR 或无表项一律 0。
      */
     private static int armorValue(ItemStack item) {
@@ -221,5 +255,9 @@ public final class DamageCalculator {
         ARMOR_TOUGHNESS.put(Material.NETHERITE_CHESTPLATE, 3.0);
         ARMOR_TOUGHNESS.put(Material.NETHERITE_LEGGINGS, 3.0);
         ARMOR_TOUGHNESS.put(Material.NETHERITE_BOOTS, 3.0);
+
+        // 静态表初始化完成后转为不可变，防止被外部修改
+        ARMOR_DEFENSE = java.util.Collections.unmodifiableMap(ARMOR_DEFENSE);
+        ARMOR_TOUGHNESS = java.util.Collections.unmodifiableMap(ARMOR_TOUGHNESS);
     }
 }

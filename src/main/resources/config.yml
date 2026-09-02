@@ -1,9 +1,9 @@
 # ============================================================
-# 木人桩 MiragEdgeDummy 配置
+# 训练假人 MiragEdgeDummy 配置
 # 修改后执行 /dummy reload 生效
 # ============================================================
 
-# 木人桩物品使用的材质（任意 Bukkit 材质名）
+# 训练假人物品使用的材质（任意 Bukkit 材质名）
 item:
   material: ARMOR_STAND
 
@@ -14,13 +14,13 @@ notifications:
   # 伤害结果显示方式：actionbar（推荐，基岩版兼容）或 chat
   mode: actionbar
 
-# 木人桩显示名（支持 & 颜色代码）
-npc-name: "&e木人桩"
+# 训练假人显示名（支持 & 颜色代码）
+npc-name: "&e训练假人"
 
 # 是否显示名字（悬浮标签）
 npc-name-visible: true
 
-# 是否需要潜行右键才能拾取木人桩
+# 是否需要潜行右键才能拾取训练假人
 removal:
   require-sneak: true
 
