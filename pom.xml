@@ -6,11 +6,11 @@
 
     <groupId>top.miragedge</groupId>
     <artifactId>miragedgedummy</artifactId>
-    <version>1.0.0</version>
+    <version>1.0</version>
     <packaging>jar</packaging>
 
-    <name>MiragEdgeDummy</name>
-    <description>MiragEdgeDummy 训练假人——打桩测伤，护甲附魔全验证</description>
+    <name>[M][训练假人]MiragEdgeDummy</name>
+    <description>训练假人——打桩测伤，护甲附魔全验证</description>
 
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
