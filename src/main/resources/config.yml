@@ -24,6 +24,10 @@ notifications:
 #   armor-stand  —— 传统盔甲架 + 皮肤头颅
 dummy-entity-type: player
 
+# 假人默认最大生命值（/dummy give 未指定 [生命] 时使用；物品带 hp 时以物品为准）。
+# 假人可被玩家击杀，击杀后立即在原位置满血重生（装备/皮肤保留）。
+dummy-default-hp: 100
+
 # 训练假人显示名（支持 & 颜色代码）
 npc-name: "&e训练假人"
 
@@ -39,7 +43,8 @@ npc-skin: "FwindEmi"
 removal:
   require-sneak: true
 
-# 只有放置者本人才能拾取（false 时任何人都能捡）
+# 保留兼容：编辑（穿/取装备、收回）已统一改为【管理员权限 miragedgedummy.admin】门禁，
+# 普通玩家在 PVP 大厅只能攻击练手、不能改动假人。此键不再影响交互权限。
 allow-non-owners-break: true
 
 # 调试模式（生产环境保持 false）

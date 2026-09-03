@@ -10,6 +10,7 @@ import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.util.Vector;
 
 import java.util.UUID;
 
@@ -38,15 +39,22 @@ public class Dummy {
 
     private final UUID id;
     private final UUID owner;
-    /** 出生锚点：物理击退（弹簧回位）的参考点，构造时固定。 */
+    /** 出生锚点：物理击退（弹簧回位）与击杀重生的参考点，构造时固定。 */
     private final Location anchor;
+    /** 假人最大生命值（放置时由物品 PDC / 配置决定；击杀重生后回满该值）。 */
+    private final int maxHp;
     private LivingEntity entity;
 
-    public Dummy(UUID id, UUID owner, LivingEntity entity) {
+    public Dummy(UUID id, UUID owner, LivingEntity entity, int maxHp) {
         this.id = id;
         this.owner = owner;
         this.entity = entity;
         this.anchor = entity != null ? entity.getLocation().clone() : null;
+        this.maxHp = maxHp > 0 ? maxHp : 100;
+    }
+
+    public Dummy(UUID id, UUID owner, LivingEntity entity) {
+        this(id, owner, entity, 100);
     }
 
     public UUID getId() {
@@ -84,8 +92,40 @@ public class Dummy {
         return anchor;
     }
 
+    public int getMaxHp() {
+        return maxHp;
+    }
+
+    /**
+     * 当前生命值（0 = 已被击杀）。
+     */
+    public double getHealth() {
+        return entity != null ? entity.getHealth() : 0;
+    }
+
     public boolean isValid() {
         return entity != null && entity.isValid() && !entity.isDead();
+    }
+
+    /**
+     * 击杀后原地重生：回满生命、回到出生锚点、熄灭火焰、清零速度。
+     */
+    public void respawn() {
+        if (entity == null || !entity.isValid()) {
+            return;
+        }
+        // 回满到配置 maxHp（并重置属性基础值，防其他插件/装备的 MAX_HEALTH 修饰造成
+        // 「实际上限 ≠ 显示 maxHp」的不一致——显示与实体永远同源）
+        AttributeInstance attr = entity.getAttribute(Attribute.MAX_HEALTH);
+        if (attr != null) {
+            attr.setBaseValue(maxHp);
+        }
+        entity.setHealth(maxHp);
+        entity.setFireTicks(0);
+        entity.setVelocity(new Vector(0, 0, 0));
+        if (anchor != null && anchor.getWorld() != null && anchor.getWorld() == entity.getWorld()) {
+            entity.teleport(anchor);
+        }
     }
 
     // ============ 实现 ============
@@ -115,13 +155,13 @@ public class Dummy {
         //  玩家 NPC → 不持久（假玩家带连接字段不适合写世界存档；区块卸载即清除，
         //            由区块加载事件 restoreChunk 从存储记录重建）。
         entity.setPersistent(entity instanceof ArmorStand);
-        // 高血量兜底：伤害在 MONITOR 已抵消，此处仅防意外致死（/kill 等绕过伤害事件的途径）。
+        // 假人生命值：由放置物品 / 配置决定（/dummy give 的 [生命] 参数），可被击杀。
         // setMaxHealth(double) 在 26.2 已弃用（since 1.20.6），改用属性 API 设置基础值。
         AttributeInstance maxHealthAttr = entity.getAttribute(Attribute.MAX_HEALTH);
         if (maxHealthAttr != null) {
-            maxHealthAttr.setBaseValue(1024);
+            maxHealthAttr.setBaseValue(maxHp);
         }
-        entity.setHealth(1024);
+        entity.setHealth(maxHp);
     }
 
     /**

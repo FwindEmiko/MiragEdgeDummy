@@ -28,31 +28,31 @@
 
 玩家向功能（玩家不依赖命令，全部 GUI/物品交互）：
 
-1. **[F1] 放置**：手持「训练假人」物品右键地面 → 扣 1 个物品，在视线落点上方 1 格生成盔甲架假人。
-2. **[F2] 挨打显示真实受击伤害**：玩家近战/弓箭（含烟花火箭的弹射物）攻击假人 → ActionBar 显示 `伤害: 7.5 (3.7 ❤)`（伤害数值可配置小数位），并可选附带蓄力百分比与 CPS（`notifications.show-cooldown/show-cps`）。**伤害来源 = 服务端真实 `EntityDamageEvent` 的最终伤害**（MONITOR 捕获）——天然包含武器附魔、攻击冷却、暴击、护甲减伤，以及**服务器上所有高级附魔插件（Aiyatsbus / EcoEnchants 等）对伤害的修改与命中效果**，不再用人工兜底公式估算。
-3. **[F3] 护甲减伤**：假人穿上盔甲后，显示的伤害按原版公式扣除护甲 + 韧性 + 保护附魔。（本插件核心卖点。）
-4. **[F4] 穿装备**：手持盔甲/武器右键假人 → 穿到对应槽位（头盔/胸甲/护腿/靴子/主手），消耗手中 1 个物品，换下的旧装备回到背包。
-5. **[F5] 取下装备**：空手右键假人 → 取下最后穿戴的装备（或遍历取一件）回背包。
-6. **[F6] 收回**：潜行右键假人 → 实体移除，训练假人物品回到背包。
-7. **[F7] 真实受击但不掉血**：假人设为可受伤实体以产生真实伤害事件（F2 的前提），但伤害在 MONITOR 归零、假人不死不燃；受击后以真实物理回弹（F13）。
-8. **[F8] 持久化**：放置后重启服务器，训练假人原位恢复（含位置朝向）。
-9. **[F9] 权限控制**：只有放置者本人能收回（可配置 `allow-non-owners-break`）。
+1. **[F1] 放置**：手持「训练假人」物品右键地面 → 扣 1 个物品，在视线落点上方 1 格生成假人实体（默认玩家 NPC）。
+2. **[F2] 挨打显示真实受击伤害**：玩家近战/弓箭攻击假人 → ActionBar 显示 `伤害: 7.5 (3.7 ❤)`（伤害数值可配置小数位），并可选附带蓄力百分比、CPS、假人剩余生命（`notifications.show-cooldown/show-cps`）。**伤害来源 = 服务端真实 `EntityDamageEvent` 的最终伤害**（MONITOR 捕获）——天然包含武器附魔、攻击冷却、暴击、护甲减伤，以及**服务器上所有高级附魔插件（Aiyatsbus / EcoEnchants 等）对伤害的修改与命中效果**。
+3. **[F3] 护甲减伤**：假人穿上盔甲后，显示的伤害按原版公式扣除护甲 + 韧性 + 保护附魔。（本插件核心卖点。玩家 NPC 为真玩家实体，护甲属性天然生效；显示值读真实 `Attribute.ARMOR`。）
+4. **[F4] 穿装备**：手持盔甲/武器右键假人 → 穿到对应槽位（头盔/胸甲/护腿/靴子/主手），消耗手中 1 个物品，换下的旧装备回到背包。**PVP 大厅场景：仅管理员（`miragedgedummy.admin`）可编辑装备。**
+5. **[F5] 取下装备**：空手右键假人 → 取下最后穿戴的装备（或遍历取一件）回背包。（仅管理员）
+6. **[F6] 收回**：潜行右键假人 → 实体移除，训练假人物品回到背包。（仅管理员）
+7. **[F7] 真实掉血 + 可被击杀**：玩家攻击让假人真实掉血（掉血量 = 显示伤害）；血量归零判定「击杀」→ 立即在原位置满血重生（装备/皮肤/追踪保留），击杀者收到击杀反馈。非玩家伤害（火/摔落/爆炸）归零。
+8. **[F8] 持久化**：放置后重启服务器，训练假人原位恢复（含位置朝向与生命值）。
+9. **[F9] 权限控制**：编辑（穿/取装备、收回）仅管理员；普通玩家只能攻击练手。
 
-增强功能（对应最近一轮需求）：
+增强功能：
 
-10. **[F10] 攻击冷却影响伤害**：未蓄满力攻击显示更低伤害——真实事件天然含冷却因子；兜底路径手动乘 `getAttackCooldown()`（0.0~1.0）。ActionBar 在未蓄满时附带「蓄力: {percent}%」。
-11. **[F11] 命中粒子**：攻击假人时产生命中粒子（红色血雾 `DUST` + 伤害指示 `DAMAGE_INDICATOR` + 暴击 `CRIT`），如同命中真实玩家。
-12. **[F12] 浮动伤害数字**：命中时假人头顶弹出上浮并淡出的伤害数字（`TextDisplay`，基岩版可显示），数字颜色红/黄（暴击）粗体。
-13. **[F13] 物理击退**：击退基于真实物理——服务端按攻击施加真实击退速度（击退附魔/疾跑真实反映），随后每 tick 用「弹簧-阻尼」模型朝出生锚点平滑回位，替代旧版生硬的 teleport 线性插值。
-14. **[F14] CPS 显示**：ActionBar 显示最近 1 秒攻击次数（点击速率），数据源 = 玩家挥臂动画（`ARM_SWING`），每次命中读数附带。
-15. **[F15] 假人皮肤**：配置 `npc-skin` = 玩家名 → 假人使用该玩家的皮肤（玩家 NPC 的皮肤写进 GameProfile；盔甲架方案则戴皮肤头颅，占用头盔槽）。皮肤经 Paper 原生 PlayerProfile 解析（对接 Mojang / 本地缓存 / 服务器离线皮肤系统）。
-16. **[F16] 假人=官方 NPC 玩家实体**：`dummy-entity-type: player`（默认）——用 **Paper 26.2 官方 NPC 玩家实体**（`World#spawn(loc, Player.class, ...)`，entity 即 `Player`），有真实玩家皮肤/身体/装备显示；Paper 官方处理了不在玩家列表/不占 Tab/不被存档等全部假人坑。生成失败自动回退盔甲架。
+10. **[F10] 攻击冷却影响伤害**：真实事件天然含冷却因子；ActionBar 附带「蓄力: {percent}%」（近战）。横扫事件已跳过（否则其冷却恒为 4%~11% 覆盖主攻击显示）。
+11. **[F11] 命中粒子**：血雾 `DUST` + 暴击 `CRIT`。
+12. **[F12] 浮动伤害数字**：`TextDisplay` transformation 插值侧抛散开（丝滑）。
+13. **[F13] 真实击退回弹**：读取服务端施加的**真实击退速度**（含击退附魔/疾跑的真实值）换算弹簧位移，朝锚点弹簧回位；无真实击退时保底冲量。
+14. **[F14] CPS 显示**：ActionBar 显示最近 1 秒点击次数。
+15. **[F15] 假人皮肤**：`npc-skin` = 玩家名（玩家 NPC 皮肤写进 GameProfile）。
+16. **[F16] 假人生命值**：`/dummy give <玩家> <数量> [生命]` 指定每只假人最大生命值（物品 lore 显示；放置/收回/重启全程保留；头顶名称实时显示 生命: 当前/最大）。
 
 管理员向（命令 `/dummy`，权限见 plugin.yml）：
 
-16. **[C1] `/dummy give <玩家> <数量>`**：给玩家训练假人物品（`miragedgedummy.give`）。
-17. **[C2] `/dummy reload`**：重载配置与消息（`miragedgedummy.reload`）。
-18. **[C3] `/dummy list` / `remove <uuid>` / `info <uuid>`**：管理所有训练假人（`miragedgedummy.admin`）。
+17. **[C1] `/dummy give <玩家> <数量> [生命]`**：给玩家训练假人物品（`miragedgedummy.give`）。
+18. **[C2] `/dummy reload`**：重载配置与消息（`miragedgedummy.reload`）。
+19. **[C3] `/dummy list` / `remove <uuid>` / `info <uuid>`**：管理所有训练假人（`miragedgedummy.admin`）。
 
 ## 3. 配置与消息（骨架已写好默认值）
 
@@ -136,11 +136,13 @@ stand.setMaxHealth(1024)（经 Attribute.MAX_HEALTH.setBaseValue）+ setHealth(1
 
 onDisable 时遍历 `dummies`，有效实体写 `DummyRecord`（位置四舍五入到合理精度，含 yaw/pitch）。
 
-### 4.6 头顶护甲值显示（增强）
+### 4.6 头顶护甲/生命值显示（真实值）
 
-- 假人显示名 = 配置 `npc-name` + ` §7护甲: §a{护甲点数}`（护甲点数 = 四件盔甲 ARMOR_DEFENSE 之和，0 也显示）。
-- 放置、恢复、穿装备、取下装备后都会调用 `DummyManager.updateDisplayName(dummy)` 刷新；
-  护甲值与伤害减伤共用 `DamageCalculator.getTotalArmor` 同一张表，保证一致。
+- 假人显示名 = `npc-name` + ` §7护甲: §aX`（+韧）+ `§7生命: §c当前§7/§a最大`。
+- **真实值优先**：玩家 NPC 是真玩家实体，装备护甲属性天然生效——直接读 `Attribute.ARMOR` /
+  `Attribute.ARMOR_TOUGHNESS` 真实值显示（与服务器实际减伤严格一致）；盔甲架兜底（属性不生效）
+  才回退静态护甲表。
+- 刷新时机：放置、恢复、穿/取装备、每次受击、击杀重生（生命值实时变化）。
 - 名称可见性仍由 `npc-name-visible` 控制。
 
 ### 4.7 受击表现（F11/F12/F13：物理击退 + 粒子 + 浮动伤害数字）
@@ -152,14 +154,15 @@ onDisable 时遍历 `dummies`，有效实体写 `DummyRecord`（位置四舍五�
 3. **浮动伤害数字（transformation 插值，丝滑动画）**：在假人位置生成 `EntityType.TEXT_DISPLAY`（billboard=CENTER、shadowed、红色，暴击黄色加粗）；
    **不垂直上天**——按攻击者视线的左右两侧随机一侧横向抛出（垂直于击退方向旋转 90°）；
    **关键帧插值**：预计算 6 个关键帧位置（水平匀速+垂直 sin 弧），每 4 tick 更新一次 `setTransformation`，客户端通过 `setInterpolationDuration(4)` 在帧间平滑插值（由渲染驱动、丝滑不卡顿），24 tick 后半程淡出自毁。实体带 PDC 标记 `damage-text`，onDisable 由 `removeAllTextDisplays()` 统一清理。
-4. **击退回弹（确定性缓动 teleport）**：记入 `recoilTicks[uuid] = 24`，由主类每 tick 的 `tickDummies()` 驱动：
-   - **不依赖服务端 velocity**（不同实体类型速度行为不可靠，且用户多次反馈看不出来）；
-   - 每 tick 按缓动曲线计算偏移：前 30% ease-out 快速后撤 0.6 格 + 上抛 0.25，后 70% ease-in-out 平滑回位；
-   - 期满 `teleport(anchor)` 精确归位、速度清零；
-   - 静止态：清零速度，漂移（方块推动等）则瞬时归位；每 tick 清 `fireTicks`。
+4. **击退回弹（弹簧-阻尼 + 真实击退值）**：记入 `recoilTicks/recoilDisp/recoilVel`，由 `tickDummies()` 每 tick 驱动：
+   - 弹簧模型：`a = -k*disp`（离锚点越远回拉拉力越大）、`vel=(vel+a)*damp`、`disp+=vel`，每 tick `teleport(anchor+disp)`；
+   - **真实击退值反馈**：回弹首帧读取服务端为假人施加的**真实击退速度**（含攻击力度/击退附魔/疾跑的真实值），
+     按 `REAL_KNOCKBACK_SCALE(4.0)` 换算为位移覆盖保底冲量（上限 2.5 格）——击退幅度完全来自真实受击数据；
+   - 收敛（|disp|²<1e-5 且 |vel|²<1e-5）或 60 tick 强制 `teleport(anchor)` 精确归位；
+   - 静止态：清零速度，漂移则瞬时归位；每 tick 清 `fireTicks`。
 
-> 设计要点：回弹采用「确定性缓动 teleport」（前 30% ease-out 快速后撤、后 70% ease-in-out 平滑回位），
-> 不依赖服务端 velocity（实体类型差异不可靠且曾反馈看不见），保证每击明显且平滑、最终精确归位。
+> 设计要点：位移由弹簧积分驱动（平滑、自然过冲），幅度由服务端真实击退速度决定（真实值反馈），
+> 保底冲量仅在服务端未施加击退时兜底，保证每击明显且最终精确归位。
 
 ### 4.8 假人皮肤（F15，npc-skin）
 
@@ -185,7 +188,7 @@ onDisable 时遍历 `dummies`，有效实体写 `DummyRecord`（位置四舍五�
 ## 5. DummyStorage / DummyRecord —— 持久化
 
 - 单文件存储：`plugins/MiragEdgeDummy/data/<uuid>.yml`。
-- 字段：uuid / owner / world / x / y / z / yaw / pitch / displayName。
+- 字段：uuid / owner / world / x / y / z / yaw / pitch / displayName / hp（生命值）。
 - **写盘必须在异步线程**（`runTaskAsynchronously`），不要在 onDisable 之外的主线程同步写文件（主线程 IO 会卡服——这是本仓库 FE_PVP 项目踩过的坑）。
 - 读入时：非法 UUID / 损坏 yml **静默跳过并打警告**，不中断启动。
 - `world == null` 禁止保存（`DummyRecord.fromLocation` 已抛 IllegalArgumentException）。
@@ -257,20 +260,23 @@ baseDamage = player.getAttribute(Attribute.ATTACK_DAMAGE).getValue()   // 1.21.4
 ### 7.1 放置 `onPlace(PlayerInteractEvent)`（F1）
 
 - 仅 `event.getHand() == EquipmentSlot.HAND` 且 `Action.RIGHT_CLICK_BLOCK`。
-- `isDummyItem(手中物品)` → `event.setCancelled(true)` → `spawnDummy(player)`。
+- `isDummyItem(手中物品)` → `event.setCancelled(true)`。
+- **PVP 大厅：放置也要求 `miragedgedummy.admin`**（普通玩家只能攻击练手，不能放置/编辑/收回），
+  无权限时提示 `messages.no-edit-permission`。
 
 ### 7.2 伤害总闸 `onAnyDamage(EntityDamageEvent)`（F7/F2，优先级 MONITOR）
 
-`isDummyEntity(entity)` 后统一处理（对**所有**伤害源——近战/弓箭/火焰/爆炸/摔落……）：
+`isDummyEntity(entity)` 后统一处理（对**所有**伤害源）：
 
-1. 若事件是 `EntityDamageByEntityEvent` → `handlePlayerAttack(...)`（§7.3）捕获真实伤害并显示；
-2. `event.setDamage(0)`（**不 cancel**）——只归零血量结算，保留服务端攻击冷却重置与真实击退；
+1. `EntityDamageByEntityEvent` → `handlePlayerAttack(...)`（§7.3）捕获真实伤害、让假人真实掉血（掉血量=显示值）、
+   伤害 ≥ 当前生命时判「击杀」→ `setDamage(0)` + `killDummy` 原地满血重生（装备/皮肤保留）；
+2. 非玩家伤害（火/摔落/爆炸/虚空）→ `setDamage(0)`（假人只被玩家击杀）；
 3. `entity.setFireTicks(0)`；
-4. 下一 tick `living.setNoDamageTicks(0)` 解除无敌帧，支持高 CPS 连点每次都触发事件。
+4. 同步 + 下一 tick `living.setNoDamageTicks(0)` 解除无敌帧，支持高 CPS 连点每次都触发事件。
 
 > **为什么不 cancel**：cancel 会让 `Player#attack` 的 `target.hurt()` 返回 false →
 > `resetAttackStrengthTicker()` 被跳过 → 玩家攻击冷却永远不重置 → 伤害恒满（违背 F10），
-> 且原版击退也不施加（破坏 F13 物理击退）。归零 + 保留事件是两者的平衡点。
+> 且原版击退也不施加（破坏 F13 真实击退）。归零致死伤害 + 保留事件是两者的平衡点。
 
 ### 7.3 玩家攻击 `handlePlayerAttack(EntityDamageByEntityEvent, Dummy)`（F2/F3，MONITOR 内）
 
@@ -282,9 +288,13 @@ baseDamage = player.getAttribute(Attribute.ATTACK_DAMAGE).getValue()   // 1.21.4
    - `|ARMOR| > 0.001`：服务端已按假人护甲结算 → `displayed = finalDamage`；
    - 否则 `|MAGIC| > 0.001`：只结算了保护附魔 → `displayed = DamageCalculator.applyArmorOnly(假人, finalDamage)`（只补护甲，避免保护重复）；
    - 否则：`displayed = DamageCalculator.calculateDamage(假人, finalDamage, 伤害类型)`（完整护甲+保护公式）。
-4. 兜底：`finalDamage ≤ 0.0001` 且近战（创造模式零伤害）→ `getPlayerBaseDamage(玩家)`（含冷却因子）× 护甲公式。
-5. 判断暴击（`fallDistance>0 && !inWater` 的近战）→ `dummyManager.onHit(dummy, displayed, crit, recoilDirection(...))`（粒子/浮动数字/物理击退，§4.7；击退方向用于服务端未击退时的兜底冲量）。
-6. `sendDamage(player, displayed)`：按 `notifications.mode` 发 ActionBar（用 `sendActionBar(Component)`，**基岩版也显示**，未蓄满附带蓄力%、附带 CPS）或 chat。
+4. **横扫跳过**：`ENTITY_SWEEP_ATTACK` 直接 `setDamage(0)` 返回——它跟随主攻击之后触发、冷却已被重置，
+   蓄力恒读 4%~11% 覆盖主攻击正确显示（「满蓄力显示 4%」根因），且与主攻击重复扣血。
+5. 兜底：`finalDamage ≤ 0.0001` 且近战（创造模式零伤害）→ `getPlayerBaseDamage(玩家)`（含冷却因子）× 护甲公式。
+6. 判断暴击 → `dummyManager.onHit(dummy, displayed, crit, recoilDirection(...))`（粒子/浮动数字/弹簧击退，§4.7）。
+7. **真实掉血/击杀判定**：`displayed ≥ living.getHealth()` → `setDamage(0)` + `killDummy`（原地满血重生）+ 击杀者提示；
+   否则 `setDamage(displayed)`（掉血量与显示一致——真实值反馈）。
+8. `sendDamage(player, displayed, cause, 剩余生命, 最大生命)`：ActionBar 显示 伤害 + 蓄力%（近战）+ CPS + 假人生命。
 
 > 注：DamageModifier 枚举在 26.2 已弃用但无替代 API（org.bukkit.damage.DamageSource 不含分量），
 > 仅在读取处 `@SuppressWarnings("deprecation")` 并注释说明。

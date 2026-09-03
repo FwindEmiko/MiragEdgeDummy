@@ -88,6 +88,11 @@ public class DummyListener implements Listener {
         ItemStack item = event.getItem();
         if (item != null && dummyManager.isDummyItem(item)) {
             event.setCancelled(true);
+            // PVP 大厅场景：放置也是管理员操作（普通玩家只能攻击练手）
+            if (!event.getPlayer().hasPermission("miragedgedummy.admin")) {
+                event.getPlayer().sendMessage(plugin.messages().fmt("messages.no-edit-permission"));
+                return;
+            }
             dummyManager.spawnDummy(event.getPlayer());
         }
     }
@@ -95,18 +100,20 @@ public class DummyListener implements Listener {
     // ============ 伤害（真实受击伤害的权威来源） ============
 
     /**
-     * 任何伤害对假人归零；玩家/投射物攻击时捕获真实受击伤害并显示。
+     * 任何伤害的处理总闸（MONITOR）：玩家/玩家投射物攻击让假人<b>真实掉血</b>，
+     * 掉血达到当前生命值上限时判定「击杀」→ 原地重生；其它伤害源（火/摔落/爆炸等）归零。
      *
-     * <p>设计要点（对应「攻击伤害应使用真实受击伤害 + 兼容高级附魔」的需求）：</p>
+     * <p>设计要点（对应「攻击伤害应使用真实受击伤害 + 兼容高级附魔 + 可被击杀」的需求）：</p>
      * <ol>
-     *   <li>假人现已不是无敌实体，服务端会为每次攻击产生真实
-     *       {@code EntityDamageByEntityEvent}——只要假人在场上，包括 Aiyatsbus / EcoEnchants 等
+     *   <li>假人不是无敌实体，服务端为每次攻击产生真实
+     *       {@code EntityDamageByEntityEvent}——包括 Aiyatsbus / EcoEnchants 等
      *       高级附魔在内的所有插件都会照常结算伤害并触发各自命中效果；</li>
      *   <li>在 MONITOR（最后一档优先级）读取伤害：此时所有插件对伤害的修改均已应用，
      *       读到的就是「真实受击伤害」（含武器附魔、攻击冷却、暴击、护甲减伤等全部成分）；</li>
-     *   <li>读取后用 {@code setDamage(0)} 抵消——只抵消血量结算，刻意<b>不</b> cancel：
-     *       cancel 会导致服务端跳过攻击冷却重置（玩家永远满蓄力，伤害恒满，违背「冷却影响伤害」），
-     *       且丧失原版真实击退（物理回弹的前提）；</li>
+     *   <li>玩家攻击：{@code event.setDamage(显示伤害)} 让假人真实掉血（掉血量与显示一致）；
+     *       若本次伤害 ≥ 当前生命 → {@code setDamage(0)} + 击杀重生（不 cancel，保留冷却重置）；</li>
+     *   <li>横扫（SWEEP_ATTACK）跳过：它跟随主攻击事件之后触发、且冷却已被服务端重置，
+     *       读出的蓄力恒为 4%~11%（覆盖主攻击的正确显示——「满蓄力显示 4%」的根因）；</li>
      *   <li>解除无敌帧（noDamageTicks），支持高 CPS 连点每次都产生事件。</li>
      * </ol>
      */
@@ -125,26 +132,22 @@ public class DummyListener implements Listener {
             return;
         }
 
-        // 玩家 / 投射物攻击：捕获真实伤害 → 效果 → 显示
-        // try/catch：表现路径（粒子/数字生成等）异常不得影响下方 setDamage(0)（假人不能掉血）
+        // 玩家 / 投射物攻击：捕获真实伤害 → 效果 → 显示（含击杀判定与反馈）
         if (event instanceof EntityDamageByEntityEvent byEntity) {
             try {
                 handlePlayerAttack(byEntity, dummy);
             } catch (RuntimeException e) {
                 plugin.getLogger().warning("处理假人受击表现异常: " + e.getMessage());
             }
+        } else {
+            // 非玩家攻击（火/摔落/爆炸等）：归零（假人只被玩家击杀）
+            event.setDamage(0);
         }
-
-        // 统一抵消伤害（见类注释：不 cancel，保留冷却重置与真实击退）
-        event.setDamage(0);
         entity.setFireTicks(0);
 
-        // 解除无敌帧（noDamageTicks）：假人掉血恒为 0，但仍会被「受伤」逻辑打上 0.5s 无敌，
-        // 不清除会让连点（高 CPS）只触发第一次事件。
+        // 解除无敌帧（noDamageTicks）：掉血后会被打上 0.5s 无敌，不清除会让连点只触发第一次。
         // 1) 同步清一次（若服务端本次未设置无敌帧则直接生效）；
         // 2) 下一 tick 再清一次（覆盖服务端在事件结束后设置无敌帧的场景）。
-        // 注：Paper 调度器在每 tick 实体处理前执行 runTask，故下一 tick 的清除先于该 tick 的攻击，
-        //     人类连点（≤20 CPS）每次都能触发真实事件；这是尽力而为的近似，极端 CPS 不保证。
         final Entity fe = entity;
         if (fe instanceof LivingEntity living) {
             living.setNoDamageTicks(0);
@@ -164,7 +167,14 @@ public class DummyListener implements Listener {
      * 真实受击伤害捕获必须读取 ARMOR/MAGIC 修饰符，故在此方法及辅助方法上抑制告警。</p>
      */
     @SuppressWarnings("deprecation")
-    private void handlePlayerAttack(EntityDamageByEntityEvent event, Dummy dummy) {
+    private double handlePlayerAttack(EntityDamageByEntityEvent event, Dummy dummy) {
+        // 横扫事件跳过：它跟随主攻击之后触发，此时攻击冷却已被服务端重置，
+        // 读出的蓄力%恒为 4%~11% 并覆盖主攻击的正确显示（「满蓄力显示 4%」的根因），
+        // 且其伤害也会与主攻击重复扣血。主攻击（ENTITY_ATTACK）已完整处理本击。
+        if (event.getCause() == EntityDamageEvent.DamageCause.ENTITY_SWEEP_ATTACK) {
+            event.setDamage(0);
+            return -1;
+        }
         Entity damager = event.getDamager();
         Player player = null;
         if (damager instanceof Player p) {
@@ -173,7 +183,8 @@ public class DummyListener implements Listener {
             player = p;
         }
         if (player == null) {
-            return;
+            event.setDamage(0);
+            return -1;
         }
 
         // ---- 1. 真实受击伤害 ----
@@ -197,9 +208,7 @@ public class DummyListener implements Listener {
             displayed = DamageCalculator.calculateDamage(dummy.getEntity(), finalDamage, event.getCause());
         }
         // 兜底：事件最终伤害不可用（例如创造模式零伤害）→ 手动估算（含攻击冷却因子）
-        if (finalDamage <= 0.0001
-                && (event.getCause() == EntityDamageEvent.DamageCause.ENTITY_ATTACK
-                    || event.getCause() == EntityDamageEvent.DamageCause.ENTITY_SWEEP_ATTACK)) {
+        if (finalDamage <= 0.0001 && event.getCause() == EntityDamageEvent.DamageCause.ENTITY_ATTACK) {
             double manual = DamageCalculator.getPlayerBaseDamage(player);
             displayed = DamageCalculator.calculateDamage(dummy.getEntity(), manual, event.getCause());
         }
@@ -208,15 +217,38 @@ public class DummyListener implements Listener {
         boolean crit = isCrit(player, event);
         dummyManager.onHit(dummy, displayed, crit, recoilDirection(damager, dummy, player));
 
-        // ---- 3. 伤害读数（ActionBar/chat 由配置决定） ----
+        // ---- 3. 真实掉血 + 击杀重生判定 ----
+        LivingEntity living = (LivingEntity) dummy.getEntity();
+        boolean killed = false;
+        double afterHp = living.getHealth();
+        if (displayed >= living.getHealth()) {
+            // 击杀：抵消致死伤害，原地重生（不 cancel，保留攻击冷却重置）
+            event.setDamage(0);
+            dummyManager.killDummy(dummy);
+            killed = true;
+            afterHp = dummy.getMaxHp();
+        } else {
+            // 正常掉血：与显示数值一致（真实值反馈）
+            event.setDamage(displayed);
+            afterHp = living.getHealth() - displayed;
+        }
+
+        // ---- 4. 伤害读数（ActionBar/chat 由配置决定） ----
         // 近战命中即一次点击：先记录本次点击（tick 去重，挥臂事件随后不会重复计），
         // 再读取 CPS，避免「伤害事件先于挥臂事件」导致读数恒少 1。
-        if (event.getCause() == EntityDamageEvent.DamageCause.ENTITY_ATTACK
-                || event.getCause() == EntityDamageEvent.DamageCause.ENTITY_SWEEP_ATTACK) {
+        if (event.getCause() == EntityDamageEvent.DamageCause.ENTITY_ATTACK) {
             recordCps(player);
         }
         // 蓄力% 仅在近战时有意义（弓箭蓄力是另一套机制，不要误显示近战冷却）
-        sendDamage(player, displayed, event.getCause());
+        sendDamage(player, displayed, event.getCause(), afterHp, dummy.getMaxHp());
+
+        // ---- 5. 击杀反馈（对击杀者） / 普通命中刷新头顶生命值 ----
+        if (killed) {
+            player.sendMessage(plugin.messages().fmt("messages.killed"));
+        } else {
+            dummyManager.updateDisplayName(dummy);
+        }
+        return displayed;
     }
 
     /**
@@ -291,15 +323,6 @@ public class DummyListener implements Listener {
     }
 
     /**
-     * 假人主人显示名：离线玩家名，查不到则用 UUID。
-     */
-    private String ownerName(Dummy dummy) {
-        String ownerStr = dummy.getOwner().toString();
-        String name = Bukkit.getOfflinePlayer(dummy.getOwner()).getName();
-        return name != null ? name : ownerStr;
-    }
-
-    /**
      * 兼容旧版交互事件（非 At 变体）：对盔甲架，At 变体已处理 → 只取消；
      * 对可能不触发 At 变体的玩家 NPC 实体，走同一套业务逻辑（tick 去重防双触发）。
      */
@@ -346,12 +369,10 @@ public class DummyListener implements Listener {
             active = off;
         }
 
-        // 交互越权防护：取下/穿上/收回均受 allow-non-owners-break 控制，
-        // 非主人不能扒甲/换装/收回（F9 语义统一；默认仅放置者本人可操作装备）
-        boolean allowNonOwners = plugin.getConfigManager().getBoolean("allow-non-owners-break", false);
-        if (!allowNonOwners && !dummyManager.isOwner(clicked, player)) {
-            player.sendMessage(plugin.messages().fmt("messages.not-owner",
-                    "owner", ownerName(dummy)));
+        // 编辑权限（PVP 竞技场大厅场景）：穿/取装备、收回假人 一律仅管理员可操作，
+        // 普通玩家只能攻击练手，不能改动假人配置。权限节点 miragedgedummy.admin（默认 op）。
+        if (!player.hasPermission("miragedgedummy.admin")) {
+            player.sendMessage(plugin.messages().fmt("messages.no-edit-permission"));
             return;
         }
 
@@ -455,8 +476,8 @@ public class DummyListener implements Listener {
     // ============ 死亡兜底 ============
 
     /**
-     * 训练假人不应死亡（伤害已在 MONITOR 抵消）。此处兜底任何绕过伤害事件的致死途径
-     * （/kill、插件直接 kill 等）：取消死亡事件并回满血量。
+     * 训练假人正常击杀路径已在 MONITOR 拦截（不产生死亡事件）。此处兜底任何绕过伤害事件的致死途径
+     * （/kill、插件直接 kill 等）：取消死亡事件并原地重生（回满血 + 回到出生锚点）。
      */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onDeath(EntityDeathEvent event) {
@@ -465,15 +486,10 @@ public class DummyListener implements Listener {
             return;
         }
         event.setCancelled(true);
-        plugin.getLogger().warning("训练假人 " + entity.getUniqueId() + " 触发死亡事件，已取消并回满血量");
-        if (entity instanceof LivingEntity living) {
-            // getMaxHealth() 已弃用（since 1.21.x），改读属性值
-            double max = 1024;
-            AttributeInstance attr = living.getAttribute(Attribute.MAX_HEALTH);
-            if (attr != null) {
-                max = attr.getValue();
-            }
-            living.setHealth(max);
+        Dummy dummy = dummyManager.getDummyByEntity(entity);
+        if (dummy != null) {
+            plugin.getLogger().info("训练假人 " + entity.getUniqueId() + " 触发死亡事件，已取消并原地重生");
+            dummyManager.killDummy(dummy);
         }
     }
 
@@ -483,11 +499,7 @@ public class DummyListener implements Listener {
      * 收回假人：校验主人（受 allow-non-owners-break 控制）→ pickupDummy → 提示。
      */
     private void removeDummy(Player player, Entity clicked, Dummy dummy) {
-        boolean allowNonOwnersBreak = plugin.getConfigManager().getBoolean("allow-non-owners-break", false);
-        if (!allowNonOwnersBreak && !dummyManager.isOwner(clicked, player)) {
-            player.sendMessage(plugin.messages().fmt("messages.not-owner"));
-            return;
-        }
+        // 权限校验已在 handleInteract 完成（管理员门禁）；此处只做防抖与收回。
         // 500ms 防抖：同一 玩家+假人 只处理一次（校验通过后才占用冷却）
         String key = player.getUniqueId() + ":" + clicked.getUniqueId();
         long now = System.currentTimeMillis();
@@ -664,7 +676,8 @@ public class DummyListener implements Listener {
      * 按配置的 notifications.mode 发送伤害显示（chat / 其余走 ActionBar），
      * ActionBar 附带攻击蓄力百分比（未满时）与 CPS（由 show-cooldown / show-cps 控制）。
      */
-    private void sendDamage(Player player, double damage, EntityDamageEvent.DamageCause cause) {
+    private void sendDamage(Player player, double damage, EntityDamageEvent.DamageCause cause,
+                             double afterHp, int maxHp) {
         Messages m = plugin.messages();
         int precision = plugin.getConfigManager().getInt("notifications.precision", 1);
         String text = m.fmtDamage(damage, damage / 2.0, precision);
@@ -685,15 +698,21 @@ public class DummyListener implements Listener {
         String cpsText = showCps
                 ? "  " + m.raw("messages.cps").replace("{cps}", String.valueOf(getCps(player)))
                 : "";
+        // 假人剩余生命（真实值反馈：掉血后实时显示当前/最大）
+        int curHp = (int) Math.max(0, Math.ceil(afterHp));
+        String hpText = "  " + m.raw("messages.hp")
+                .replace("{current}", String.valueOf(curHp))
+                .replace("{max}", String.valueOf(maxHp));
 
         if (mode.equalsIgnoreCase("chat")) {
-            player.sendMessage(text + cooldownText + cpsText);
+            player.sendMessage(text + cooldownText + cpsText + hpText);
             return;
         }
 
-        // ActionBar（默认，基岩版兼容）：伤害 + 蓄力%（近战）+ CPS
+        // ActionBar（默认，基岩版兼容）：伤害 + 蓄力%（近战）+ CPS + 假人生命
         // sendActionBar(String) 已弃用（换 Adventure Component）；text 为 § 颜色码字符串
-        player.sendActionBar(LegacyComponentSerializer.legacySection().deserialize(text + cooldownText + cpsText));
+        player.sendActionBar(LegacyComponentSerializer.legacySection()
+                .deserialize(text + cooldownText + cpsText + hpText));
     }
 
     /**

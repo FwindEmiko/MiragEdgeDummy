@@ -1,5 +1,5 @@
 name: MiragEdgeDummy
-version: '1.2.0'
+version: '1.2.1'
 main: top.miragedge.dummy.MiragEdgeDummy
 api-version: '1.21'
 prefix: 训练假人
@@ -9,7 +9,7 @@ description: MiragEdgeDummy 训练假人——打桩测伤，护甲附魔全验�
 commands:
   dummy:
     description: 训练假人管理命令
-    usage: /dummy give <玩家> <数量> | /dummy reload | /dummy list | /dummy remove <uuid> | /dummy info <uuid>
+    usage: /dummy give <玩家> <数量> [生命] | /dummy reload | /dummy list | /dummy remove <uuid> | /dummy info <uuid>
     aliases: [ 训练假人, dummies ]
     # 权限由各子命令内部校验：miragedgedummy.give / .reload / .admin（见下方 permissions）
 
@@ -21,7 +21,7 @@ permissions:
     description: 重载插件配置与消息
     default: op
   miragedgedummy.admin:
-    description: 管理命令（list/remove/info）
+    description: 管理命令（list/remove/info）与编辑训练假人装备（穿/取/收回，PVP 大厅仅管理员可编辑）
     default: op
 
 softdepend: [ PlaceholderAPI ]

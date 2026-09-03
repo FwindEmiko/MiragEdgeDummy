@@ -155,8 +155,9 @@ public class DummyStorage {
                 float yaw = (float) cfg.getDouble("yaw", 0.0D);
                 float pitch = (float) cfg.getDouble("pitch", 0.0D);
                 String displayName = cfg.getString("display-name", null);
+                int hp = cfg.getInt("hp", 0);
 
-                records.put(uuid, new DummyRecord(uuid, owner, world, x, y, z, yaw, pitch, displayName));
+                records.put(uuid, new DummyRecord(uuid, owner, world, x, y, z, yaw, pitch, displayName, hp));
             } catch (Exception e) {
                 plugin.getLogger().warning("加载训练假人文件 " + file.getName() + " 失败: " + e.getMessage());
             }
@@ -185,6 +186,9 @@ public class DummyStorage {
             cfg.set("pitch", round(record.pitch()));
             if (record.displayName() != null) {
                 cfg.set("display-name", record.displayName());
+            }
+            if (record.hp() > 0) {
+                cfg.set("hp", record.hp());
             }
             File f = new File(dataDir, record.uuid() + ".yml");
             cfg.save(f);

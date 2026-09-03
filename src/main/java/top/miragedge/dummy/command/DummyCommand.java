@@ -95,6 +95,20 @@ public class DummyCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(plugin.messages().fmt("messages.invalid-amount"));
             return;
         }
+        // 可选 [生命] 参数：假人最大生命值（PVP 大厅练手：不同血量假人）
+        int hp = 0;
+        if (args.length >= 4) {
+            try {
+                hp = Integer.parseInt(args[3]);
+            } catch (NumberFormatException e) {
+                sender.sendMessage(plugin.messages().fmt("messages.invalid-amount"));
+                return;
+            }
+            if (hp <= 0) {
+                sender.sendMessage(plugin.messages().fmt("messages.invalid-amount"));
+                return;
+            }
+        }
         // 按物品堆叠上限拆分为多组逐步放入背包（ARMOR_STAND 上限 16，非 64）
         ItemStack sample = dummyManager.createDummyItem(1);
         int maxStack = sample.getMaxStackSize();
@@ -102,7 +116,7 @@ public class DummyCommand implements CommandExecutor, TabCompleter {
         int remaining = amount;
         while (remaining > 0) {
             int part = Math.min(remaining, maxStack);
-            Map<Integer, ItemStack> leftover = target.getInventory().addItem(dummyManager.createDummyItem(part));
+            Map<Integer, ItemStack> leftover = target.getInventory().addItem(dummyManager.createDummyItem(part, hp));
             if (!leftover.isEmpty()) {
                 for (ItemStack stack : leftover.values()) {
                     target.getWorld().dropItemNaturally(target.getLocation(), stack);
@@ -200,6 +214,9 @@ public class DummyCommand implements CommandExecutor, TabCompleter {
         }
         sender.sendMessage(plugin.messages().fmt("messages.info-header", "id", record.uuid().toString()));
         sender.sendMessage(plugin.messages().fmt("messages.info-owner", "owner", ownerName));
+        if (record.hp() > 0) {
+            sender.sendMessage(plugin.messages().fmt("messages.info-hp", "hp", String.valueOf(record.hp())));
+        }
         sender.sendMessage(plugin.messages().fmt("messages.info-world", "world", record.world()));
         sender.sendMessage(plugin.messages().fmt("messages.info-location",
                 "x", String.format(Locale.ROOT, "%.2f", record.x()),
@@ -246,6 +263,9 @@ public class DummyCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("give")) {
             return Collections.singletonList("1");
+        }
+        if (args.length == 4 && args[0].equalsIgnoreCase("give")) {
+            return Collections.singletonList("100");
         }
         if (args.length == 2 && (args[0].equalsIgnoreCase("remove") || args[0].equalsIgnoreCase("info"))) {
             String prefix = args[1].toLowerCase();

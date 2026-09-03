@@ -12,7 +12,6 @@ import org.bukkit.event.entity.CreatureSpawnEvent;
 import top.miragedge.dummy.MiragEdgeDummy;
 
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.UUID;
 import java.util.logging.Level;
@@ -70,34 +69,42 @@ public final class PlayerNpcFactory {
      * 官方 API：EntityType.PLAYER 26.2 起可生成（生成的是 NPC 假人，非在线玩家）。
      */
     private static Player spawnOfficial(World world, Location location) {
-        if (!EntityType.PLAYER.isSpawnable()) {
-            MiragEdgeDummy.getInstance().getLogger().info(
-                    "官方玩家 NPC 不可用（EntityType.PLAYER.isSpawnable()=false），改用 NMS 反射方案");
-            return null;
-        }
+        // isSpawnable() 在某些构建上返回 false 但 spawn 仍可用，因此不做短路判断，直接尝试
         try {
-            return world.spawn(location, Player.class, CreatureSpawnEvent.SpawnReason.CUSTOM, false, null);
+            Player npc = world.spawn(location, Player.class, CreatureSpawnEvent.SpawnReason.CUSTOM, false, null);
+            if (npc != null) {
+                return npc;
+            }
         } catch (Exception e) {
             MiragEdgeDummy.getInstance().getLogger()
-                    .log(Level.WARNING, "官方玩家 NPC 生成抛异常，尝试 NMS 反射方案: " + e.getMessage());
-            return null;
+                    .log(Level.INFO, "官方玩家 NPC 生成不可用（" + e.getMessage() + "），改用 NMS 反射方案");
         }
+        return null;
     }
 
     /**
      * NMS 反射兜底：按 1.21.4 Mojang 映射生成 ServerPlayer 并加入世界（不在玩家列表、不被存档）。
      */
     private static Player spawnReflected(World world, Location location, String skinName) {
+        String stage = "1.handle";
         try {
             // ---- 1. NMS handle 与声明类型（Class.getConstructor 要求精确声明类型，
             //      运行时子类 DedicatedServer 不匹配构造函数声明的 MinecraftServer） ----
-            Object nmsServer = Bukkit.getServer().getClass().getMethod("getServer").invoke(Bukkit.getServer());
-            Object nmsWorld = world.getClass().getMethod("getHandle").invoke(world);
             Class<?> minecraftServerClass = Class.forName("net.minecraft.server.MinecraftServer");
+            Object nmsServer;
+            try {
+                // 首选静态 MinecraftServer.getServer()
+                nmsServer = minecraftServerClass.getMethod("getServer").invoke(null);
+            } catch (Exception noStatic) {
+                // 兜底：CraftServer.getServer()
+                nmsServer = Bukkit.getServer().getClass().getMethod("getServer").invoke(Bukkit.getServer());
+            }
+            Object nmsWorld = world.getClass().getMethod("getHandle").invoke(world);
             Class<?> serverLevelClass = Class.forName("net.minecraft.server.level.ServerLevel");
             Class<?> serverPlayerClass = Class.forName("net.minecraft.server.level.ServerPlayer");
             Class<?> gameProfileClass = Class.forName("com.mojang.authlib.GameProfile");
 
+            stage = "2.profile";
             // ---- 2. GameProfile：随机 UUID（不占真实玩家身份）+ 皮肤纹理 ----
             String displayName = (skinName != null && !skinName.isBlank()) ? skinName.trim() : "Dummy";
             Object gameProfile = gameProfileClass.getConstructor(UUID.class, String.class)
@@ -129,6 +136,7 @@ public final class PlayerNpcFactory {
                 }
             }
 
+            stage = "3.clientinfo";
             // ---- 3. ClientInformation.createDefault()（双包名兜底） ----
             Class<?> ciClass = null;
             Object clientInformation = null;
@@ -145,6 +153,7 @@ public final class PlayerNpcFactory {
                 }
             }
 
+            stage = "4.construct";
             // ---- 4. ServerPlayer 构造：4 参（1.21.4+）→ 3 参（旧版） ----
             Object serverPlayer;
             if (ciClass != null && clientInformation != null) {
@@ -157,20 +166,54 @@ public final class PlayerNpcFactory {
                 serverPlayer = spCtor.newInstance(nmsServer, nmsWorld, gameProfile);
             }
 
-            // ---- 5. 伪造网络连接（防 ServerPlayer.tick 的 connection.tickClientLoadTimeout 空指针） ----
-            Class<?> packetFlowClass = Class.forName("net.minecraft.network.protocol.PacketFlow");
-            Object clientbound = packetFlowClass.getField("CLIENTBOUND").get(null);
-            Class<?> connectionClass = Class.forName("net.minecraft.network.Connection");
-            Object fakeConnection = connectionClass.getConstructor(packetFlowClass).newInstance(clientbound);
-            Class<?> cookieClass = Class.forName("net.minecraft.server.network.CommonListenerCookie");
-            Object cookie = cookieClass.getConstructor(gameProfileClass, int.class, ciClass, boolean.class)
-                    .newInstance(gameProfile, 0, clientInformation, false);
-            Class<?> listenerClass = Class.forName("net.minecraft.server.network.ServerGamePacketListenerImpl");
-            Object listener = listenerClass.getConstructor(
-                    minecraftServerClass, connectionClass, serverPlayerClass, cookieClass)
-                    .newInstance(nmsServer, fakeConnection, serverPlayer, cookie);
-            serverPlayerClass.getField("connection").set(serverPlayer, listener);
+            // ---- 4b. 防御性：构造后再把 gameProfile 写回字段（FancyNPCs 同款做法，
+            //       个别版本构造函数内部不会把传入 profile 存入字段，导致皮肤不生效） ----
+            try {
+                java.lang.reflect.Field gpField = serverPlayerClass.getField("gameProfile");
+                gpField.set(serverPlayer, gameProfile);
+            } catch (Exception ignored) {
+                // 字段不存在/不可写则依赖构造函数本身
+            }
 
+            stage = "5.fakeconn";
+            // ---- 5. 伪造网络连接（防 ServerPlayer.tick 的 connection.tickClientLoadTimeout 空指针） ----
+            //      仅 1.20.5+（有 ClientInformation）的 4 参构造路径需要；旧版 3 参路径跳过。
+            if (ciClass != null && clientInformation != null) {
+                Class<?> packetFlowClass = Class.forName("net.minecraft.network.protocol.PacketFlow");
+                Object clientbound = packetFlowClass.getField("CLIENTBOUND").get(null);
+                Class<?> connectionClass = Class.forName("net.minecraft.network.Connection");
+                Object fakeConnection = connectionClass.getConstructor(packetFlowClass).newInstance(clientbound);
+                // 用 netty EmbeddedChannel 填充私有 channel 字段（实体移除/断开时会调用 channel.close，
+                // 空 channel 会 NPE——Marallyzen 的 FakeNetworkManagerImpl 同款处理）
+                try {
+                    java.lang.reflect.Field channelField = connectionClass.getDeclaredField("channel");
+                    channelField.setAccessible(true);
+                    Object channel = Class.forName("io.netty.channel.embedded.EmbeddedChannel")
+                            .getConstructor().newInstance();
+                    channelField.set(fakeConnection, channel);
+                } catch (Exception ignored) {
+                    // channel 注入失败不阻塞（移除实体时可能有风险，但生成仍继续）
+                }
+                // Paper 1.21.4 的 CommonListenerCookie 是 6 参 record（Paper patch 加了 clientBrand+channels），
+                // 4 参构造不存在——用官方静态工厂 createInitial(GameProfile, boolean) 创建
+                Class<?> cookieClass = Class.forName("net.minecraft.server.network.CommonListenerCookie");
+                Object cookie;
+                try {
+                    cookie = cookieClass.getMethod("createInitial", gameProfileClass, boolean.class)
+                            .invoke(null, gameProfile, false);
+                } catch (NoSuchMethodException noFactory) {
+                    // 兜底：直接 4 参构造（旧版本或未打 patch 的服务端）
+                    cookie = cookieClass.getConstructor(gameProfileClass, int.class, ciClass, boolean.class)
+                            .newInstance(gameProfile, 0, clientInformation, false);
+                }
+                Class<?> listenerClass = Class.forName("net.minecraft.server.network.ServerGamePacketListenerImpl");
+                Object listener = listenerClass.getConstructor(
+                        minecraftServerClass, connectionClass, serverPlayerClass, cookieClass)
+                        .newInstance(nmsServer, fakeConnection, serverPlayer, cookie);
+                serverPlayerClass.getField("connection").set(serverPlayer, listener);
+            }
+
+            stage = "6.skinlayers";
             // ---- 6. 皮肤层字节 127（DATA_PLAYER_MODE_CUSTOMISATION id=17，全部皮肤层可见） ----
             try {
                 Object entityData = serverPlayerClass.getMethod("getEntityData").invoke(serverPlayer);
@@ -186,6 +229,7 @@ public final class PlayerNpcFactory {
                 // 皮肤层字节失败不影响生成（只是少外层贴图）
             }
 
+            stage = "7.addworld";
             // ---- 7. 位置 + 加入世界 ----
             serverPlayerClass.getMethod("setPos", double.class, double.class, double.class)
                     .invoke(serverPlayer, location.getX(), location.getY(), location.getZ());
@@ -196,6 +240,7 @@ public final class PlayerNpcFactory {
             serverLevelClass.getMethod("addFreshEntity", entityClass).invoke(nmsWorld, serverPlayer);
             added = true;
 
+            stage = "8.bukkit";
             // ---- 8. 取 Bukkit Player ----
             Entity bukkitEntity = (Entity) serverPlayerClass.getMethod("getBukkitEntity").invoke(serverPlayer);
             if (bukkitEntity instanceof Player player) {
@@ -209,7 +254,7 @@ public final class PlayerNpcFactory {
             return null;
         } catch (Exception e) {
             MiragEdgeDummy.getInstance().getLogger()
-                    .log(Level.WARNING, "NMS 反射生成玩家 NPC 也失败，将回退盔甲架: " + e.getMessage());
+                    .log(Level.WARNING, "NMS 反射生成玩家 NPC 失败（步骤 " + stage + "），将回退盔甲架: " + e.getMessage());
             return null;
         }
     }

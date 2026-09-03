@@ -28,18 +28,19 @@ public record DummyRecord(
         double z,
         float yaw,
         float pitch,
-        String displayName
+        String displayName,
+        int hp
 ) {
 
     /**
      * 从坐标构造：world 为 null 时抛出 {@link IllegalArgumentException}（由调用方捕获跳过）。
      */
-    public static DummyRecord fromLocation(UUID uuid, UUID owner, Location loc, String displayName) {
+    public static DummyRecord fromLocation(UUID uuid, UUID owner, Location loc, String displayName, int hp) {
         World w = loc.getWorld();
         if (w == null) {
             throw new IllegalArgumentException("World cannot be null");
         }
-        return new DummyRecord(uuid, owner, w.getName(), loc.getX(), loc.getY(), loc.getZ(), loc.getYaw(), loc.getPitch(), displayName);
+        return new DummyRecord(uuid, owner, w.getName(), loc.getX(), loc.getY(), loc.getZ(), loc.getYaw(), loc.getPitch(), displayName, hp);
     }
 
     /**

@@ -10,8 +10,10 @@ item:
   lore:
     - "&7右键地面放置一个训练假人"
     - "&7训练假人可以穿上护甲，测出真实伤害"
-    - "&7空手右键可取下装备"
-    - "&7潜行右键训练假人可收回"
+    - "&7空手右键可取下装备（仅管理员）"
+    - "&7潜行右键训练假人可收回（仅管理员）"
+  # 指定生命值物品的附加说明行（{hp}=生命值；仅 /dummy give 带 [生命] 时显示）
+  lore-hp: "&7生命值: &c{hp}"
 
 # 消息区
 messages:
@@ -22,14 +24,19 @@ messages:
   # 例外：伤害读数不加全局前缀（ActionBar 高频刷新，短文案更清爽，与 F2 示例一致）
   # ❤ 为 U+2764（重黑心），基岩版默认字体原生支持、Geyser 可正常显示，属允许的白名单符号
   damage: "&f伤害: &c{damage} &f(&c{hearts} ❤&f)"
-  # 伤害读数附加信息（同样不加全局前缀）：攻击蓄力百分比 / CPS
+  # 伤害读数附加信息（同样不加全局前缀）：攻击蓄力百分比 / CPS / 假人剩余生命
   cooldown: "&7蓄力: &e{percent}&7%"
   cps: "&7CPS: &a{cps}"
+  hp: "&7生命: &c{current}&7/&a{max}"
 
   # 放置 / 收回
   placed: "&7&o已放置训练假人"
   removed: "&7&o已收回训练假人"
   not-owner: "&7&o这个训练假人不是你的（主人: {owner}），不能操作"
+  # 击杀反馈（假人被击杀后原地重生）
+  killed: "&c已击杀训练假人！&7&o假人已原地重生"
+  # 编辑权限（PVP 大厅：普通玩家只能打，不能改装备）
+  no-edit-permission: "&7&o只有管理员才能编辑训练假人装备"
 
   # 装备相关
   equipped: "&7&o已装备 {item}"
@@ -37,7 +44,7 @@ messages:
 
   # 命令相关
   no-permission: "&7&o你没有权限这样做"
-  invalid-usage: "&c用法: /dummy give <玩家> <数量> | /dummy reload | /dummy list | /dummy remove <uuid> | /dummy info <uuid>"
+  invalid-usage: "&c用法: /dummy give <玩家> <数量> [生命] | /dummy reload | /dummy list | /dummy remove <uuid> | /dummy info <uuid>"
   invalid-amount: "&7&o数量必须是正整数"
   player-not-found: "&7&o找不到该玩家"
   gave-item: "&7&o已给 {player} {amount} 个训练假人"
@@ -57,6 +64,7 @@ messages:
   invalid-uuid: "&7&o无效的训练假人ID，应为UUID格式"
   inventory-full: "&7&o背包已满，多余物品已掉落在原地"
   info-owner: "&7&o主人: {owner}"
+  info-hp: "&7&o生命值: {hp}"
   skin-helmet-blocked: "&7&o已启用假人皮肤，无法在头部装备物品"
   info-world: "&7&o世界: {world}"
   info-location: "&7&o位置: {x}, {y}, {z}"

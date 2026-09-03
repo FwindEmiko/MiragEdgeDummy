@@ -11,6 +11,8 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.World;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.block.Block;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Display;
@@ -61,8 +63,10 @@ public class DummyManager {
     private static final double RECOIL_SPRING = 0.15;
     /** 阻尼系数：每 tick 速度衰减倍率（0~1，越小停得越快）。 */
     private static final double RECOIL_DAMPING = 0.82;
-    /** 初始推出位移（格）。 */
+    /** 保底初始推出位移（格）。 */
     private static final double RECOIL_PUSH = 0.6;
+    /** 真实击退速度 → 弹簧位移换算比例（原版击退速度约 0.4 格/tick → 位移约 1.6 格）。 */
+    private static final double REAL_KNOCKBACK_SCALE = 4.0;
 
     private final MiragEdgeDummy plugin;
     private final DummyStorage storage;
@@ -75,6 +79,8 @@ public class DummyManager {
     private final Map<UUID, Vector> recoilVel = new ConcurrentHashMap<>();
     /** 在场浮动伤害数字实体 id 集合（用于关服清理） */
     private final Set<UUID> textDisplays = ConcurrentHashMap.newKeySet();
+    /** 头顶名称刷新节流：uuid -> 上次刷新时间戳（避免高频命中每次都广播 metadata） */
+    private final Map<UUID, Long> lastNameRefresh = new ConcurrentHashMap<>();
 
     public DummyManager(MiragEdgeDummy plugin, DummyStorage storage) {
         this.plugin = plugin;
@@ -92,6 +98,14 @@ public class DummyManager {
      */
     @SuppressWarnings("deprecation")
     public ItemStack createDummyItem(int amount) {
+        return createDummyItem(amount, 0);
+    }
+
+    /**
+     * 构造训练假人放置物品（可选生命值）：hp &gt; 0 时写入 PDC hp 键并附加生命值 lore 行。
+     */
+    @SuppressWarnings("deprecation")
+    public ItemStack createDummyItem(int amount, int hp) {
         String matName = plugin.getConfigManager().getString("item.material", "ARMOR_STAND");
         Material mat = Material.getMaterial(matName);
         if (mat == null) {
@@ -101,11 +115,27 @@ public class DummyManager {
         ItemMeta meta = stack.getItemMeta();
         if (meta != null) {
             meta.setDisplayName(plugin.messages().getString("item.name", "&6训练假人"));
-            meta.setLore(plugin.messages().getStringList("item.lore"));
+            java.util.List<String> lore = new java.util.ArrayList<>(plugin.messages().getStringList("item.lore"));
+            if (hp > 0) {
+                lore.add(plugin.messages().getString("item.lore-hp", "&7生命值: &a{hp}").replace("{hp}", String.valueOf(hp)));
+                meta.getPersistentDataContainer().set(hpKey(), PersistentDataType.INTEGER, hp);
+            }
+            meta.setLore(lore);
             meta.getPersistentDataContainer().set(dummyKey(), PersistentDataType.BYTE, (byte) 1);
             stack.setItemMeta(meta);
         }
         return stack;
+    }
+
+    /**
+     * 读取物品上携带的生命值（无则 0）。
+     */
+    public int getDummyItemHp(ItemStack stack) {
+        if (stack == null || !stack.hasItemMeta()) {
+            return 0;
+        }
+        Integer hp = stack.getItemMeta().getPersistentDataContainer().get(hpKey(), PersistentDataType.INTEGER);
+        return hp != null ? hp : 0;
     }
 
     /**
@@ -121,8 +151,8 @@ public class DummyManager {
     // ============ 放置 ============
 
     /**
-     * 玩家放置训练假人：扣 1 个物品、取视线落点上方 1 格、生成盔甲架、
-     * 应用标记与静态配置、应用皮肤、建 tracker、写存储。
+     * 玩家放置训练假人：扣 1 个物品、取视线落点上方 1 格、生成假人实体、
+     * 应用标记/静态配置/皮肤、按物品携带的生命值设置血量、建 tracker、写存储。
      */
     public Dummy spawnDummy(Player player) {
         ItemStack hand = player.getInventory().getItemInMainHand();
@@ -136,6 +166,12 @@ public class DummyManager {
         if (target == null) {
             player.sendMessage(plugin.messages().fmt("messages.placement-failed"));
             return null;
+        }
+
+        // 物品携带的生命值（/dummy give 的 [生命] 参数）；未指定用配置默认
+        int hp = getDummyItemHp(hand);
+        if (hp <= 0) {
+            hp = plugin.getConfigManager().getInt("dummy-default-hp", 100);
         }
 
         // 扣 1 个放置物品（显式回写，兼容 getItemInMainHand 返回镜像副本的实现）
@@ -170,21 +206,21 @@ public class DummyManager {
             spawned.getPersistentDataContainer().set(ownerKey(), PersistentDataType.STRING, owner.toString());
             spawned.getPersistentDataContainer().set(idKey(), PersistentDataType.STRING, id.toString());
 
-            dummy = new Dummy(id, owner, spawned);
+            dummy = new Dummy(id, owner, spawned, hp);
             dummy.configureStatic();
             applySkinIfConfigured(spawned);
             updateDisplayName(dummy);
             // 落盘移入 try：fromLocation 异常时实体不留在 tracker/世界里
             dummies.put(id, dummy);
-            storage.saveRecord(DummyRecord.fromLocation(id, owner, loc, displayName));
+            storage.saveRecord(DummyRecord.fromLocation(id, owner, loc, displayName, hp));
         } catch (RuntimeException e) {
-            // 生成/落盘失败：移除已生成的残留实体（防孤儿）+ 退还已扣物品
+            // 生成/落盘失败：移除已生成的残留实体（防孤儿）+ 退还已扣物品（保留 hp）
             if (spawned != null && spawned.isValid()) {
                 spawned.remove();
             }
             // 生成失败：退还已扣的 1 个物品，避免静默丢失；多余放不下则掉落
             plugin.getLogger().warning("放置训练假人失败: " + e.getMessage());
-            ItemStack refund = createDummyItem(1);
+            ItemStack refund = createDummyItem(1, hp);
             Map<Integer, ItemStack> leftover = player.getInventory().addItem(refund);
             if (!leftover.isEmpty()) {
                 dropRemainder(player.getLocation(), leftover);
@@ -246,9 +282,10 @@ public class DummyManager {
 
         dummy.remove();
         dummies.remove(dummy.getId());
+        lastNameRefresh.remove(dummy.getId());
         storage.remove(dummy.getId());
 
-        Map<Integer, ItemStack> rest = player.getInventory().addItem(createDummyItem(1));
+        Map<Integer, ItemStack> rest = player.getInventory().addItem(createDummyItem(1, dummy.getMaxHp()));
         dropRemainder(dropLoc, rest);
 
         player.sendMessage(plugin.messages().fmt("messages.removed"));
@@ -265,8 +302,26 @@ public class DummyManager {
         boolean visible = plugin.getConfigManager().getBoolean("npc-name-visible", true);
         String rawName = plugin.getConfigManager().getString("npc-name", "&e训练假人");
         String base = (rawName == null || rawName.isEmpty()) ? "&e训练假人" : rawName;
-        int armor = DamageCalculator.getTotalArmor(dummy.getEntity());
-        double toughness = DamageCalculator.getTotalToughness(dummy.getEntity());
+        // 真实护甲值：玩家 NPC 的装备属性天然生效，直接读 Attribute.ARMOR 真实值；
+        // 盔甲架兜底（属性不生效）才回退静态护甲表，保证显示值与实际减伤一致。
+        double armorAttrValue = 0;
+        double toughnessAttrValue = 0;
+        if (dummy.getLiving() != null) {
+            AttributeInstance armorAttr = dummy.getLiving().getAttribute(Attribute.ARMOR);
+            if (armorAttr != null) {
+                armorAttrValue = armorAttr.getValue();
+            }
+            AttributeInstance toughnessAttr = dummy.getLiving().getAttribute(Attribute.ARMOR_TOUGHNESS);
+            if (toughnessAttr != null) {
+                toughnessAttrValue = toughnessAttr.getValue();
+            }
+        }
+        int armor = armorAttrValue > 0
+                ? (int) Math.round(armorAttrValue)
+                : DamageCalculator.getTotalArmor(dummy.getEntity());
+        double toughness = toughnessAttrValue > 0
+                ? toughnessAttrValue
+                : DamageCalculator.getTotalToughness(dummy.getEntity());
         StringBuilder sb = new StringBuilder(Messages.colorize(base));
         sb.append(" §7护甲: §a").append(armor);
         if (toughness > 0) {
@@ -274,7 +329,41 @@ public class DummyManager {
                     ? String.format(java.util.Locale.ROOT, "%.1f", toughness)
                     : String.valueOf((int) toughness));
         }
+        // 生命值显示：当前/最大（随受击与击杀重生实时变化）
+        double health = dummy.getHealth();
+        int curHp = (int) Math.ceil(health);
+        sb.append(" §7生命: §c").append(curHp).append("§7/§a").append(dummy.getMaxHp());
+        // 节流：高频命中（多玩家打同一假人）时 100ms 内最多广播一次名称刷新，降低 metadata 包量
+        long now = System.currentTimeMillis();
+        Long last = lastNameRefresh.get(dummy.getId());
+        if (last != null && now - last < 120L) {
+            return;
+        }
+        lastNameRefresh.put(dummy.getId(), now);
         dummy.setCustomName(sb.toString(), visible);
+    }
+
+    /**
+     * 击杀假人：原地立即重生（回满生命 + 回到出生锚点 + 清回弹状态 + 刷新头顶显示 + 重生反馈）。
+     * 重生采用同一实体原地满血复活（不销毁实体），因此装备/皮肤/追踪全部保留。
+     */
+    public void killDummy(Dummy dummy) {
+        if (dummy == null) {
+            return;
+        }
+        recoilTicks.remove(dummy.getId());
+        recoilDisp.remove(dummy.getId());
+        recoilVel.remove(dummy.getId());
+        dummy.respawn();
+        updateDisplayName(dummy);
+        // 重生反馈：音效 + 粒子
+        LivingEntity entity = dummy.getLiving();
+        if (entity != null && entity.isValid()) {
+            World world = entity.getWorld();
+            Location loc = entity.getLocation();
+            world.playSound(loc, Sound.ENTITY_PLAYER_DEATH, 0.7f, 1.0f);
+            world.spawnParticle(Particle.CLOUD, loc.clone().add(0, 1, 0), 12, 0.4, 0.6, 0.4, 0.02);
+        }
     }
 
     // ============ 受击表现（真实物理击退 + 粒子 + 浮动伤害数字） ============
@@ -314,8 +403,9 @@ public class DummyManager {
         spawnDamageText(entity, damage, crit, direction);
 
         // 4. 触发击退回弹：弹簧-阻尼模型（离锚点越远，回拉拉力越大）。
-        //    由 tickDummies 用确定性 teleport 驱动（不依赖服务端 velocity，不同实体类型行为不可靠），
-        //    位移/速度每 tick 按弹簧积分，可见、平滑、带自然过冲回摆。
+        //    【真实击退值反馈】：初始位移先按方向给一个保底冲量；
+        //    下一 tick 读取服务端施加的真实击退速度（含攻击力度/击退附魔/疾跑的真实值），
+        //    按比例换算为弹簧位移覆盖——击退效果完全来自真实受击数据。
         Vector away = direction.clone();
         away.setY(0);
         if (away.lengthSquared() < 1e-6) {
@@ -331,6 +421,8 @@ public class DummyManager {
         recoilDisp.put(dummy.getId(), currentDisp.clone().add(push));
         recoilVel.put(dummy.getId(), new Vector(0, 0, 0));
         recoilTicks.put(dummy.getId(), RECOIL_TICKS);
+        // 真实击退校准不在独立任务里做（与 tickDummies 清零速度的时序会竞争）；
+        // 改在 tickDummies 回弹首帧内读取真实速度覆盖位移（见 tickDummies 注释）。
     }
 
     /**
@@ -345,10 +437,11 @@ public class DummyManager {
         for (Dummy dummy : dummies.values()) {
             LivingEntity entity = dummy.getLiving();
             if (entity == null || !entity.isValid() || entity.isDead()) {
-                // 实体失效：顺带清掉回弹状态，避免陈旧条目累积
+                // 实体失效：顺带清掉回弹状态与名称节流，避免陈旧条目累积
                 recoilTicks.remove(dummy.getId());
                 recoilDisp.remove(dummy.getId());
                 recoilVel.remove(dummy.getId());
+                lastNameRefresh.remove(dummy.getId());
                 continue;
             }
             // 防火
@@ -365,10 +458,30 @@ public class DummyManager {
 
             Integer left = recoilTicks.get(dummy.getId());
             if (left != null && left > 0) {
+                boolean firstFrame = (left == RECOIL_TICKS);
                 recoilTicks.put(dummy.getId(), left - 1);
                 Vector disp = recoilDisp.get(dummy.getId());
                 Vector vel = recoilVel.get(dummy.getId());
                 if (disp != null && vel != null) {
+                    // 【首帧】真实击退值校准：服务端在原版伤害结算后为假人施加了真实击退速度
+                    // （含攻击力度/击退附魔/疾跑的真实值），首帧读到后按比例换算为弹簧位移覆盖
+                    // 保底冲量——击退效果完全来自真实受击数据。
+                    if (firstFrame) {
+                        Vector realVel = entity.getVelocity();
+                        if (realVel.lengthSquared() > 0.0004) {
+                            Vector realDisp = realVel.clone().multiply(REAL_KNOCKBACK_SCALE);
+                            if (realDisp.getY() < 0.15) {
+                                realDisp.setY(Math.max(realDisp.getY(), 0.15));
+                            }
+                            if (realDisp.lengthSquared() > 2.5 * 2.5) {
+                                realDisp.normalize().multiply(2.5);
+                            }
+                            disp = realDisp;
+                            recoilDisp.put(dummy.getId(), disp);
+                            vel = new Vector(0, 0, 0);
+                            recoilVel.put(dummy.getId(), vel);
+                        }
+                    }
                     // 弹簧：加速度 a = -k * disp（位移越大，朝锚点的回拉拉力越大）；阻尼衰减
                     Vector accel = disp.clone().multiply(-RECOIL_SPRING);
                     vel.add(accel).multiply(RECOIL_DAMPING);
@@ -711,13 +824,11 @@ public class DummyManager {
                 if (d == null || !d.isValid()) {
                     continue;
                 }
-                // 玩家 NPC 的 getStand() 为 null：必须用 getEntity()（Entity 即 Nameable）读显示名
-                String displayName = d.getEntity().getCustomName();
-                if (displayName == null) {
-                    displayName = plugin.getConfigManager().getString("npc-name", "&e训练假人");
-                }
+                // 持久化保存配置基础名（不含动态「护甲/生命」后缀——恢复时由 updateDisplayName 重建，
+                // 避免把瞬时血量写进死数据）
+                String displayName = plugin.getConfigManager().getString("npc-name", "&e训练假人");
                 // onDisable 阶段必须同步写（禁用后 runTaskAsynchronously 会抛 IllegalPluginAccessException）
-                storage.saveRecordSync(DummyRecord.fromLocation(d.getId(), d.getOwner(), d.getLocation(), displayName));
+                storage.saveRecordSync(DummyRecord.fromLocation(d.getId(), d.getOwner(), d.getLocation(), displayName, d.getMaxHp()));
             } catch (RuntimeException e) {
                 plugin.getLogger().warning("无法保存训练假人 " + (d != null ? d.getId() : "?") + ": " + e.getMessage());
             }
@@ -823,9 +934,12 @@ public class DummyManager {
         }
         // 复用已存在的同 id PDC 实体（setPersistent(true) 的实体可能随区块持久化，
         // 重启后仍留在世界，直接再 spawn 会导致重复实体）。
+        // 记录生命值：老记录无 hp 字段（0）时用配置默认
+        int hp = rec.hp() > 0 ? rec.hp() : plugin.getConfigManager().getInt("dummy-default-hp", 100);
+
         LivingEntity existingEntity = findExistingById(rec.uuid());
         if (existingEntity != null) {
-            Dummy dummy = new Dummy(rec.uuid(), rec.owner(), existingEntity);
+            Dummy dummy = new Dummy(rec.uuid(), rec.owner(), existingEntity, hp);
             dummy.configureStatic();
             applySkinIfConfigured(existingEntity);
             updateDisplayName(dummy);
@@ -842,7 +956,7 @@ public class DummyManager {
         spawned.getPersistentDataContainer().set(ownerKey(), PersistentDataType.STRING, rec.owner().toString());
         spawned.getPersistentDataContainer().set(idKey(), PersistentDataType.STRING, rec.uuid().toString());
 
-        Dummy dummy = new Dummy(rec.uuid(), rec.owner(), spawned);
+        Dummy dummy = new Dummy(rec.uuid(), rec.owner(), spawned, hp);
         dummy.configureStatic();
         applySkinIfConfigured(spawned);
         updateDisplayName(dummy);
@@ -918,6 +1032,10 @@ public class DummyManager {
 
     public NamespacedKey skinKey() {
         return new NamespacedKey(plugin, "skin");
+    }
+
+    public NamespacedKey hpKey() {
+        return new NamespacedKey(plugin, "hp");
     }
 
     public NamespacedKey textKey() {
