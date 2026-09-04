@@ -43,6 +43,8 @@ public class Dummy {
     private final Location anchor;
     /** 假人最大生命值（放置时由物品 PDC / 配置决定；击杀重生后回满该值）。 */
     private final int maxHp;
+    /** 当前显示名（含护甲/生命数据），用于玩家 NPC 的 Team 包与进服补发 */
+    private String displayName;
     private LivingEntity entity;
 
     public Dummy(UUID id, UUID owner, LivingEntity entity, int maxHp) {
@@ -97,6 +99,34 @@ public class Dummy {
     }
 
     /**
+     * 有效生命上限：min(配置 maxHp, 实体实际属性上限)。
+     * 26.2 下第三方插件/服务端可能钳制玩家生命上限（实测 100 → 80），显示与回血都以实际值为准。
+     */
+    public double getEffectiveMaxHp() {
+        return Math.max(1.0, Math.min(maxHp, readMaxHealth()));
+    }
+
+    /**
+     * 实体当前生命上限（走属性 API，避开弃用的 Damageable#getMaxHealth()）。
+     */
+    private double readMaxHealth() {
+        if (entity == null) {
+            return maxHp;
+        }
+        try {
+            AttributeInstance attr = entity.getAttribute(Attribute.MAX_HEALTH);
+            if (attr != null) {
+                double value = attr.getValue();
+                if (value > 0) {
+                    return value;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return maxHp;
+    }
+
+    /**
      * 当前生命值（0 = 已被击杀）。
      */
     public double getHealth() {
@@ -114,13 +144,29 @@ public class Dummy {
         if (entity == null || !entity.isValid()) {
             return;
         }
-        // 回满到配置 maxHp（并重置属性基础值，防其他插件/装备的 MAX_HEALTH 修饰造成
-        // 「实际上限 ≠ 显示 maxHp」的不一致——显示与实体永远同源）
+        // 回满到配置 maxHp。26.2 下玩家实体的有效生命上限可能被第三方插件/属性修饰钳制
+        // （实测出现「Health value (100.0) must be between 0 and 80.0」异常，导致击杀后卡 1 血
+        // 无法重生）——先清掉外来修饰，再钳制到有效上限，setHealth 永远不抛异常。
         AttributeInstance attr = entity.getAttribute(Attribute.MAX_HEALTH);
         if (attr != null) {
-            attr.setBaseValue(maxHp);
+            try {
+                attr.getModifiers().forEach(m -> attr.removeModifier(m));
+            } catch (Exception ignored) {
+            }
+            try {
+                attr.setBaseValue(maxHp);
+            } catch (Exception ignored) {
+            }
         }
-        entity.setHealth(maxHp);
+        try {
+            entity.setHealth(maxHp);
+        } catch (Exception e) {
+            // 有效上限被服务端钳制：退而求其次回满到有效上限
+            try {
+                entity.setHealth(readMaxHealth());
+            } catch (Exception ignored) {
+            }
+        }
         entity.setFireTicks(0);
         entity.setVelocity(new Vector(0, 0, 0));
         if (anchor != null && anchor.getWorld() != null && anchor.getWorld() == entity.getWorld()) {
@@ -159,9 +205,23 @@ public class Dummy {
         // setMaxHealth(double) 在 26.2 已弃用（since 1.20.6），改用属性 API 设置基础值。
         AttributeInstance maxHealthAttr = entity.getAttribute(Attribute.MAX_HEALTH);
         if (maxHealthAttr != null) {
-            maxHealthAttr.setBaseValue(maxHp);
+            try {
+                maxHealthAttr.getModifiers().forEach(m -> maxHealthAttr.removeModifier(m));
+            } catch (Exception ignored) {
+            }
+            try {
+                maxHealthAttr.setBaseValue(maxHp);
+            } catch (Exception ignored) {
+            }
         }
-        entity.setHealth(maxHp);
+        try {
+            entity.setHealth(maxHp);
+        } catch (Exception e) {
+            try {
+                entity.setHealth(readMaxHealth());
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     /**
@@ -194,6 +254,13 @@ public class Dummy {
                 break;
             default:
                 break;
+        }
+        // 玩家 NPC：手动广播装备包（不依赖实体追踪器，FancyNpcs 同款）
+        if (entity instanceof Player npc) {
+            try {
+                top.miragedge.dummy.npc.PlayerNpcFactory.broadcastEquipment(npc);
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -255,13 +322,20 @@ public class Dummy {
      */
     @SuppressWarnings("deprecation")
     public void setCustomName(String name, boolean visible) {
+        this.displayName = name;
         entity.setCustomName(name);
         entity.setCustomNameVisible(visible);
     }
 
+    /** 当前显示名（玩家 NPC 的 Team 包需要按名字重建） */
+    public String getDisplayName() {
+        return displayName;
+    }
+
     public void remove() {
         if (entity != null) {
-            entity.remove();
+            // 玩家 NPC 走 NMS discard（CraftPlayer.remove() 会抛 UnsupportedOperationException）
+            top.miragedge.dummy.npc.PlayerNpcFactory.removeEntity(entity);
         }
     }
 

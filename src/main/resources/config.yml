@@ -25,8 +25,11 @@ notifications:
 dummy-entity-type: player
 
 # 假人默认最大生命值（/dummy give 未指定 [生命] 时使用；物品带 hp 时以物品为准）。
-# 假人可被玩家击杀，击杀后立即在原位置满血重生（装备/皮肤保留）。
+# 假人可被玩家击杀。
 dummy-default-hp: 100
+
+# 击杀后重生延迟（tick，20 tick = 1 秒）：死亡动画/音效后原地满血重生，期间攻击被忽略。
+respawn-delay-ticks: 60
 
 # 训练假人显示名（支持 & 颜色代码）
 npc-name: "&e训练假人"

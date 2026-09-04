@@ -26,6 +26,10 @@
 6. 假人生命值：物品 PDC hp 键（/dummy give [生命] 参数）+ DummyRecord.hp 持久化 + Dummy.maxHp；
    configureStatic 用 maxHp 设 Attribute.MAX_HEALTH；击杀原地重生=同一实体 setHealth(max)+teleport(anchor)（装备/皮肤保留）。
 7. PVP 大厅权限：编辑（穿/取装备、收回）仅 miragedgedummy.admin；普通玩家只能攻击。头顶名称显示 护甲/韧/生命（真实 Attribute 值）。
+8. 【关键】玩家 NPC 渲染 = 真实实体（伤害真实性）+ **手动渲染包**（可见性兜底，FancyNpcs 26.2 同款）：
+   spawn 后向每个 viewer 手动发 PlayerInfoUpdate(ADD_PLAYER, listed=false) + ClientboundAddEntityPacket(11参)
+   + ClientboundSetEntityDataPacket(itemsById 全量)；回弹 teleport/穿取装备/名字更新/移除 也全部手动补发对应包，
+   不依赖实体追踪器（Leaf 26.2 + Moonrise 下假玩家可能不被追踪广播）。
 
 ## 模块/组件
 - npc.PlayerNpcFactory：NMS 反射假玩家（1.21.4 配方，参考 FancyNPCs implementation_26_2 / Marallyzen FakePlayerEntity）。
@@ -51,9 +55,52 @@
 10. 蓄力% 只对近战显示（弓箭命中时显示近战冷却会误导）；getAttackCooldown()=蓄力进度 0..1（0=刚攻击）。
 11. CPS 显示依赖 messages.cps 键——旧 messages.yml 缺键时 raw() 返回空串（看起来「没显示」），靠配置自动升级补全。
 12. 子代理审查模式：后台 subagent 易因上下文不足失败，用聚焦小 prompt（只读指定文件+指定问题）成功率更高。
+13. 【重大】1.20.5+ 假玩家「服务端存在但客户端看不见」：AddPlayerPacket 已不含 GameProfile，
+    客户端只渲染「玩家信息表」里有记录的实体——必须广播 ClientboundPlayerInfoUpdatePacket
+    （Action.ADD_PLAYER，Entry listed=false 不占 Tab）；玩家加入时补发、移除时发 RemovePacket。
+14. ClientboundPlayerInfoUpdatePacket$Entry 构造器 1.21.0/1.21.1 为 7 参（无 listOrder）、
+    1.21.2+ 为 8 参（尾参 int listOrder=0）——按前 5 参精确匹配 + 后 N 参按类型填默认，兼容两套签名。
+    Entry 的 displayName 在 Paper 是 Adventure Component（vanilla 是 chat Component），传 null 皆可。
+15. 【重大】authlib 7.0.63/9.0.75（Leaf 26.2 实际加载）的 GameProfile 是 **record**：
+    访问器是 id()/name()/properties()，没有 getId()/getProperties()！反射必须按名字列表逐个尝试
+    （id→getId、properties→getProperties），否则广播玩家信息包抛 NoSuchMethodException、皮肤纹理静默丢失。
+    验证方法：javap /mnt/miragedge/MainServer/libraries/com/mojang/authlib/9.0.75/authlib-9.0.75.jar。
+16b. 【重大·26.2 实测】ClientboundPlayerInfoUpdatePacket$Entry 在 leaf-26.2-63 是 **9 参** record：
+     (UUID, GameProfile, boolean listed, int latency, GameType, Component displayName,
+      boolean showHat, int listOrder, RemoteChatSession.Data)
+     1.21.x 是 7/8 参——构造器扫描必须按前 5 参精确匹配 + 剩余参数【按声明类型】填默认
+     （boolean→true/int→0/引用→null），不能数死参数个数。GameType 26.2 有 DEFAULT_MODE 静态字段兜底。
+     验证：javap /tmp/leaf26 下的反编译类（jar 在 /mnt/miragedge/MainServer/versions/26.2/leaf-26.2.jar）。
+16c. 【26.2】ClientboundAddPlayerPacket 类已不存在（只有 ClientboundAddEntityPacket）——生成包由实体追踪器
+     内部处理，插件只需保证 PlayerInfoUpdatePacket 先到；ServerPlayer.gameProfile 字段在父类
+     net.minecraft.world.entity.player.Player 上（getField 沿继承链可查）；connection 字段仍在 ServerPlayer。
+17. 【26.2】玩家 NPC 头顶名字显示的是 GameProfile 名而非 metadata 自定义名（客户端对玩家实体忽略 metadata customName）。
+     解法：改 listName 字段 + 发 UPDATE_DISPLAY_NAME 信息包（displayName=自定义名）；更新频率节流 120ms。
+18. 【26.2】ADD_PLAYER 的 listed=false 仍可能短暂入列 Tab——用静态工厂 ClientboundPlayerInfoUpdatePacket.updateListed(uuid,false) 显式摘除。
+19. 【26.2】玩家生命上限可能被服务端/第三方插件钳制（实测配置 100 实际 80）：setHealth(100) 抛
+     IllegalArgumentException 会打断击杀重生流程（卡 1 血打不死）。对策：respawn/configureStatic 先清外来
+     属性修饰再钳制 setHealth，读上限一律走属性 API（避开弃用 getMaxHealth）。
+20. 【26.2】攻击冷却在伤害事件 MONITOR 时刻可能已被重置（蓄力显示 4%/11% 根因之一）：用 PlayerAnimationEvent
+     挥臂瞬间缓存 getAttackCooldown()，伤害显示读缓存值兜底。
+21. 击杀重生改为延迟 respawn-delay-ticks（默认 60）：死亡音效/粒子 + 客户端移除实体，延迟后满血重生并重发
+     生成包；等待期 isRespawning 忽略攻击；不再向击杀者发消息。
+16. 【重大】CraftPlayer.remove() 对 Player 实体抛 UnsupportedOperationException（"Cannot remove player,
+    use Player#kickPlayer"）——玩家 NPC 移除必须走 NMS discard()（PlayerNpcFactory.removeEntity 统一入口）。
+    cleanupOrphans/spawnDummy 失败路径/Dummy.remove 全部要过这个入口，否则 /dummy remove 直接命令异常。
+
+22. 【26.2·皮肤不显示根因】completeFromCache(false) 的 false =「不加载纹理」！必须 completeFromCache(true, false)；
+    缓存缺失时在线回源 complete(true, true)（textures+online，走 Mojang API）。加 SKIN_CACHE 静态缓存防重复回源。
+23. 【26.2·头顶名字】玩家实体头顶标签来自 Team 包而非 metadata：FancyNpcs 同款——PlayerTeam(Scoreboard,"dummy-"+uuid8)
+    prefix=显示名、nameTagVisibility=ALWAYS、collision=NEVER、成员=profile名，发 createAddOrModifyPacket(team,false)；
+    名字更新时重发；进服补发 sendTeamPacketTo。
+24. 【26.2·装备不显示根因】CraftEquipmentSlot 在 26.2 移到了 org.bukkit.craftbukkit 根包（原 inventory 子包），
+    Class.forName 需双路径兜底。
+25. 【26.2·蓄力】挥臂事件在攻击包之后处理（读到的冷却已重置）；改为 EntityDamageEvent LOWEST 优先捕获
+    getAttackCooldown()（本击结束才重置，LOWEST 必为真实值），MONITOR 显示时优先读该缓存。
 
 ## 进行中的工作
-- 当前等待用户实测：NMS 反射假玩家（步骤诊断日志：失败会显示「步骤 X.xxx」）+ 生命值/击杀重生/管理员权限门禁。
+- 已部署（MD5 f5b9e294）：手动渲染包方案 + 血量钳制 + 延迟重生 + 头顶名字/Tab 摘除 + 蓄力缓存。
+  等待用户 reload 实测：头顶显示护甲/生命、不在 Tab、击退自然、延迟重生、蓄力%准确。
 - 官方 NPC API 在用户 Leaf 26.2-63-alpha 不可用（isSpawnable=false），NMS 反射是唯一途径，失败回退盔甲架。
 - 审查子代理报告 7 项已处理：真实击退捕获移入 tickDummies 首帧（原 runTask 与清零竞争=死代码）；
   名称刷新 120ms 节流；放置/编辑/收回统一 miragedgedummy.admin 门禁；respawn 回满配置 maxHp 并重置属性 base；

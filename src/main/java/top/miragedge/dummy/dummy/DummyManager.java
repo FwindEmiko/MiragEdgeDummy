@@ -58,15 +58,15 @@ import java.util.concurrent.ConcurrentHashMap;
 public class DummyManager {
 
     /** 回弹最大安全时长（tick）：弹簧-阻尼收敛不了时强制归位。 */
-    private static final int RECOIL_TICKS = 60;
+    private static final int RECOIL_TICKS = 40;
     /** 弹簧刚度：位移越大，朝锚点的回拉加速度越大（离得越远拉力越大）。 */
-    private static final double RECOIL_SPRING = 0.15;
+    private static final double RECOIL_SPRING = 0.09;
     /** 阻尼系数：每 tick 速度衰减倍率（0~1，越小停得越快）。 */
-    private static final double RECOIL_DAMPING = 0.82;
+    private static final double RECOIL_DAMPING = 0.9;
     /** 保底初始推出位移（格）。 */
-    private static final double RECOIL_PUSH = 0.6;
-    /** 真实击退速度 → 弹簧位移换算比例（原版击退速度约 0.4 格/tick → 位移约 1.6 格）。 */
-    private static final double REAL_KNOCKBACK_SCALE = 4.0;
+    private static final double RECOIL_PUSH = 0.35;
+    /** 真实击退速度 → 弹簧位移换算比例（原版击退速度约 0.4 格/tick → 位移约 1.0 格）。 */
+    private static final double REAL_KNOCKBACK_SCALE = 2.5;
 
     private final MiragEdgeDummy plugin;
     private final DummyStorage storage;
@@ -81,10 +81,19 @@ public class DummyManager {
     private final Set<UUID> textDisplays = ConcurrentHashMap.newKeySet();
     /** 头顶名称刷新节流：uuid -> 上次刷新时间戳（避免高频命中每次都广播 metadata） */
     private final Map<UUID, Long> lastNameRefresh = new ConcurrentHashMap<>();
+    /** 击杀后重生等待中的假人（期间忽略攻击，延迟结束后原地满血重生） */
+    private final Set<UUID> respawning = ConcurrentHashMap.newKeySet();
 
     public DummyManager(MiragEdgeDummy plugin, DummyStorage storage) {
         this.plugin = plugin;
         this.storage = storage;
+    }
+
+    /**
+     * 所有在场假人的快照（只读用途：遍历/统计）。
+     */
+    public java.util.Collection<Dummy> getAllDummies() {
+        return java.util.List.copyOf(dummies.values());
     }
 
     // ============ 物品 ============
@@ -216,7 +225,7 @@ public class DummyManager {
         } catch (RuntimeException e) {
             // 生成/落盘失败：移除已生成的残留实体（防孤儿）+ 退还已扣物品（保留 hp）
             if (spawned != null && spawned.isValid()) {
-                spawned.remove();
+                PlayerNpcFactory.removeEntity(spawned);
             }
             // 生成失败：退还已扣的 1 个物品，避免静默丢失；多余放不下则掉落
             plugin.getLogger().warning("放置训练假人失败: " + e.getMessage());
@@ -280,6 +289,10 @@ public class DummyManager {
             dropRemainder(dropLoc, leftover);
         }
 
+        // 玩家 NPC：先广播移除包（移除实体 + 清理客户端玩家信息，防幽灵条目）
+        if (dummy.isPlayerNpc() && dummy.getLiving() instanceof Player npc) {
+            PlayerNpcFactory.broadcastRemovePackets(npc);
+        }
         dummy.remove();
         dummies.remove(dummy.getId());
         lastNameRefresh.remove(dummy.getId());
@@ -329,10 +342,10 @@ public class DummyManager {
                     ? String.format(java.util.Locale.ROOT, "%.1f", toughness)
                     : String.valueOf((int) toughness));
         }
-        // 生命值显示：当前/最大（随受击与击杀重生实时变化）
+        // 生命值显示：当前/有效上限（26.2 下玩家生命上限可能被服务端钳制，如 100→80）
         double health = dummy.getHealth();
         int curHp = (int) Math.ceil(health);
-        sb.append(" §7生命: §c").append(curHp).append("§7/§a").append(dummy.getMaxHp());
+        sb.append(" §7生命: §c").append(curHp).append("§7/§a").append((int) dummy.getEffectiveMaxHp());
         // 节流：高频命中（多玩家打同一假人）时 100ms 内最多广播一次名称刷新，降低 metadata 包量
         long now = System.currentTimeMillis();
         Long last = lastNameRefresh.get(dummy.getId());
@@ -341,22 +354,28 @@ public class DummyManager {
         }
         lastNameRefresh.put(dummy.getId(), now);
         dummy.setCustomName(sb.toString(), visible);
+        // 玩家 NPC：头顶名字来自 GameProfile/listName，用 UPDATE_DISPLAY_NAME 信息包刷新
+        if (dummy.isPlayerNpc() && dummy.getLiving() instanceof Player npc) {
+            PlayerNpcFactory.broadcastNameUpdate(npc, sb.toString());
+        }
     }
 
     /**
-     * 击杀假人：原地立即重生（回满生命 + 回到出生锚点 + 清回弹状态 + 刷新头顶显示 + 重生反馈）。
-     * 重生采用同一实体原地满血复活（不销毁实体），因此装备/皮肤/追踪全部保留。
+     * 击杀假人：进入重生等待（死亡音效/粒子 + 客户端移除实体），延迟 respawn-delay-ticks 后
+     * 原地满血重生并重新广播生成包。等待期间攻击被忽略。不向击杀者发消息（用户要求）。
      */
     public void killDummy(Dummy dummy) {
         if (dummy == null) {
             return;
         }
-        recoilTicks.remove(dummy.getId());
-        recoilDisp.remove(dummy.getId());
-        recoilVel.remove(dummy.getId());
-        dummy.respawn();
-        updateDisplayName(dummy);
-        // 重生反馈：音效 + 粒子
+        UUID id = dummy.getId();
+        if (!respawning.add(id)) {
+            return; // 已在重生等待中
+        }
+        recoilTicks.remove(id);
+        recoilDisp.remove(id);
+        recoilVel.remove(id);
+
         LivingEntity entity = dummy.getLiving();
         if (entity != null && entity.isValid()) {
             World world = entity.getWorld();
@@ -364,6 +383,33 @@ public class DummyManager {
             world.playSound(loc, Sound.ENTITY_PLAYER_DEATH, 0.7f, 1.0f);
             world.spawnParticle(Particle.CLOUD, loc.clone().add(0, 1, 0), 12, 0.4, 0.6, 0.4, 0.02);
         }
+        // 客户端暂时移除实体（视觉死亡），延迟后重新广播生成
+        if (entity instanceof Player npc) {
+            PlayerNpcFactory.broadcastRemovePackets(npc);
+        }
+
+        int delay = plugin.getConfigManager().getInt("respawn-delay-ticks", 60);
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            respawning.remove(id);
+            if (!plugin.isEnabled()) {
+                return;
+            }
+            if (dummy.getEntity() == null || !dummy.getEntity().isValid()) {
+                return;
+            }
+            dummy.respawn();
+            updateDisplayName(dummy);
+            if (dummy.getLiving() instanceof Player npc) {
+                PlayerNpcFactory.broadcastSpawnPackets(npc);
+            }
+        }, Math.max(1, delay));
+    }
+
+    /**
+     * 是否处于击杀后重生等待中（此期间攻击被忽略）。
+     */
+    public boolean isRespawning(UUID id) {
+        return respawning.contains(id);
     }
 
     // ============ 受击表现（真实物理击退 + 粒子 + 浮动伤害数字） ============
@@ -494,9 +540,15 @@ public class DummyManager {
                         recoilTicks.remove(dummy.getId());
                         recoilDisp.remove(dummy.getId());
                         recoilVel.remove(dummy.getId());
+                        if (entity instanceof Player npc) {
+                            PlayerNpcFactory.broadcastTeleport(npc);
+                        }
                     } else {
                         entity.teleport(anchor.toVector().add(disp)
                                 .toLocation(entity.getWorld(), entity.getYaw(), entity.getPitch()));
+                        if (entity instanceof Player npc) {
+                            PlayerNpcFactory.broadcastTeleport(npc);
+                        }
                     }
                 }
                 // 回弹期间每 tick 清零速度：避免服务端 velocity 与弹簧 teleport 竞争抖动
@@ -781,16 +833,16 @@ public class DummyManager {
         }
     }
 
-    public Map<UUID, Dummy> getAllDummies() {
-        return dummies;
-    }
-
     public boolean removeDummy(UUID id) {
         recoilTicks.remove(id);
         recoilDisp.remove(id);
         recoilVel.remove(id);
         Dummy d = dummies.remove(id);
         if (d != null) {
+            // 玩家 NPC：广播移除包（移除实体 + 清理客户端玩家信息）
+            if (d.isPlayerNpc() && d.getLiving() instanceof Player npc) {
+                PlayerNpcFactory.broadcastRemovePackets(npc);
+            }
             // 管理员删除时把假人身上的装备掉落在原地，避免物品静默丢失（皮肤头除外）
             Location loc = d.getLocation();
             if (loc != null && loc.getWorld() != null) {
@@ -993,13 +1045,13 @@ public class DummyManager {
                 String idStr = entity.getPersistentDataContainer().get(idKey(), PersistentDataType.STRING);
                 if (idStr == null) {
                     plugin.getLogger().warning("清理孤儿训练假人时发现缺少 id PDC 标记的实体 " + entity.getUniqueId() + "，已移除");
-                    entity.remove();
+                    PlayerNpcFactory.removeEntity(entity);
                     continue;
                 }
                 try {
                     UUID uuid = UUID.fromString(idStr);
                     if (!dummies.containsKey(uuid) && storage.get(uuid) == null) {
-                        entity.remove();
+                        PlayerNpcFactory.removeEntity(entity);
                         continue;
                     }
                     // 已跟踪的假人：若世界里出现的是另一台同 id 实体（如恢复重建导致的重复），移除残留
@@ -1007,7 +1059,7 @@ public class DummyManager {
                     if (tracked != null && tracked.getEntity() != null
                             && !tracked.getEntity().getUniqueId().equals(entity.getUniqueId())) {
                         plugin.getLogger().warning("发现重复训练假人实体 " + entity.getUniqueId() + "（id=" + uuid + "），已移除");
-                        entity.remove();
+                        PlayerNpcFactory.removeEntity(entity);
                     }
                 } catch (IllegalArgumentException e) {
                     plugin.getLogger().warning("清理孤儿训练假人时遇到非法 UUID '" + idStr + "': " + e.getMessage());

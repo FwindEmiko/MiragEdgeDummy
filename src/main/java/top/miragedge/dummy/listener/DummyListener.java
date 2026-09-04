@@ -31,6 +31,7 @@ import top.miragedge.dummy.MiragEdgeDummy;
 import top.miragedge.dummy.damage.DamageCalculator;
 import top.miragedge.dummy.dummy.Dummy;
 import top.miragedge.dummy.dummy.DummyManager;
+import top.miragedge.dummy.npc.PlayerNpcFactory;
 import top.miragedge.dummy.util.Messages;
 
 import java.util.ArrayDeque;
@@ -60,6 +61,11 @@ public class DummyListener implements Listener {
     private final Map<String, Long> lastPickup = new ConcurrentHashMap<>();
     // CPS：每玩家最近 1 秒内的攻击（挥臂）时间戳队列
     private final Map<UUID, ArrayDeque<Long>> cpsClicks = new ConcurrentHashMap<>();
+    // 挥臂瞬间的蓄力值（0~1）：26.2 攻击管线下 MONITOR 时刻读冷却可能已被重置，
+    // 挥臂事件先于攻击处理，此值最接近「本次攻击的实际蓄力」。
+    private final Map<UUID, Float> swingCooldown = new ConcurrentHashMap<>();
+    // 伤害事件 LOWEST 时刻的蓄力值（冷却在本次攻击结束才重置，LOWEST 必为真实蓄力值）
+    private final Map<UUID, Float> preAttackCooldown = new ConcurrentHashMap<>();
     // CPS 去重：同一服务器 tick 内的 伤害事件+挥臂事件 视为同一次点击（只计一次）
     private final Map<UUID, Integer> lastCpsTick = new ConcurrentHashMap<>();
     // 右键交互去重：At 与非 At 事件同 tick 双触发时只处理一次
@@ -117,6 +123,25 @@ public class DummyListener implements Listener {
      *   <li>解除无敌帧（noDamageTicks），支持高 CPS 连点每次都产生事件。</li>
      * </ol>
      */
+    /**
+     * LOWEST：在攻击冷却重置前捕获蓄力值（本击结束服务端才重置冷却，此值=本次攻击真实蓄力）。
+     */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onCaptureCooldown(EntityDamageEvent event) {
+        try {
+            if (event.getCause() != EntityDamageEvent.DamageCause.ENTITY_ATTACK) {
+                return;
+            }
+            if (!dummyManager.isDummyEntity(event.getEntity())) {
+                return;
+            }
+            if (event instanceof EntityDamageByEntityEvent byEvent && byEvent.getDamager() instanceof Player attacker) {
+                preAttackCooldown.put(attacker.getUniqueId(), attacker.getAttackCooldown());
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onAnyDamage(EntityDamageEvent event) {
         // 已被低优先级插件取消的攻击不处理（避免假回弹/错误显示）
@@ -175,6 +200,11 @@ public class DummyListener implements Listener {
             event.setDamage(0);
             return -1;
         }
+        // 击杀后重生等待期间：忽略攻击（延迟结束后才满血复活）
+        if (dummyManager.isRespawning(dummy.getId())) {
+            event.setDamage(0);
+            return -1;
+        }
         Entity damager = event.getDamager();
         Player player = null;
         if (damager instanceof Player p) {
@@ -217,16 +247,14 @@ public class DummyListener implements Listener {
         boolean crit = isCrit(player, event);
         dummyManager.onHit(dummy, displayed, crit, recoilDirection(damager, dummy, player));
 
-        // ---- 3. 真实掉血 + 击杀重生判定 ----
+        // ---- 3. 真实掉血 + 击杀判定（击杀进入延迟重生，无消息提醒） ----
         LivingEntity living = (LivingEntity) dummy.getEntity();
-        boolean killed = false;
         double afterHp = living.getHealth();
         if (displayed >= living.getHealth()) {
-            // 击杀：抵消致死伤害，原地重生（不 cancel，保留攻击冷却重置）
+            // 击杀：抵消致死伤害，进入延迟重生（不 cancel，保留攻击冷却重置）
             event.setDamage(0);
             dummyManager.killDummy(dummy);
-            killed = true;
-            afterHp = dummy.getMaxHp();
+            afterHp = 0;
         } else {
             // 正常掉血：与显示数值一致（真实值反馈）
             event.setDamage(displayed);
@@ -240,12 +268,10 @@ public class DummyListener implements Listener {
             recordCps(player);
         }
         // 蓄力% 仅在近战时有意义（弓箭蓄力是另一套机制，不要误显示近战冷却）
-        sendDamage(player, displayed, event.getCause(), afterHp, dummy.getMaxHp());
+        sendDamage(player, displayed, event.getCause(), afterHp, (int) dummy.getEffectiveMaxHp());
 
-        // ---- 5. 击杀反馈（对击杀者） / 普通命中刷新头顶生命值 ----
-        if (killed) {
-            player.sendMessage(plugin.messages().fmt("messages.killed"));
-        } else {
+        // ---- 5. 普通命中刷新头顶生命值（击杀已由 killDummy 延迟重生时刷新） ----
+        if (displayed < living.getHealth()) {
             dummyManager.updateDisplayName(dummy);
         }
         return displayed;
@@ -396,6 +422,26 @@ public class DummyListener implements Listener {
         equipItem(player, clicked, dummy, active, main, off, fromMainHand);
     }
 
+    // ============ 玩家加入（补发玩家 NPC 信息包） ============
+
+    /**
+     * 1.20.5+ 客户端只渲染「玩家信息表」中存在的玩家实体：新加入的玩家需要为
+     * 所有已在场的玩家 NPC 补发 ClientboundPlayerInfoUpdatePacket（实体追踪器会在其
+     * 进入视野时自动发 AddPlayerPacket，但信息包必须由插件自己广播）。
+     */
+    @EventHandler
+    public void onPlayerJoin(org.bukkit.event.player.PlayerJoinEvent event) {
+        for (Dummy dummy : dummyManager.getAllDummies()) {
+            if (dummy.isPlayerNpc() && dummy.isValid() && dummy.getLiving() instanceof Player npc) {
+                PlayerNpcFactory.sendSpawnPacketsTo(npc, event.getPlayer());
+                String name = dummy.getDisplayName();
+                if (name != null) {
+                    PlayerNpcFactory.sendTeamPacketTo(npc, event.getPlayer(), name);
+                }
+            }
+        }
+    }
+
     // ============ 世界加载（补恢复） ============
 
     /**
@@ -430,6 +476,11 @@ public class DummyListener implements Listener {
             return;
         }
         recordCps(event.getPlayer());
+        // 记录挥臂瞬间蓄力（26.2 下 MONITOR 时刻冷却可能已重置，这里更接近真实攻击蓄力）
+        try {
+            swingCooldown.put(event.getPlayer().getUniqueId(), event.getPlayer().getAttackCooldown());
+        } catch (Exception ignored) {
+        }
     }
 
     /**
@@ -667,6 +718,8 @@ public class DummyListener implements Listener {
         long cutoff = now - 60_000L;
         lastPickup.entrySet().removeIf(e -> e.getValue() < cutoff);
         cpsClicks.entrySet().removeIf(e -> e.getValue().isEmpty() || e.getValue().peekLast() < cutoff);
+        swingCooldown.entrySet().removeIf(e -> !Bukkit.getOfflinePlayer(e.getKey()).isOnline());
+        preAttackCooldown.entrySet().removeIf(e -> !Bukkit.getOfflinePlayer(e.getKey()).isOnline());
         // lastInteractTick 值是最新 tick（单调递增），用「过期 tick」清理：当前 tick 差值过大即移除
         int nowTick = Bukkit.getCurrentTick();
         lastInteractTick.entrySet().removeIf(e -> nowTick - e.getValue() > 100);
@@ -689,9 +742,12 @@ public class DummyListener implements Listener {
                 || cause == EntityDamageEvent.DamageCause.ENTITY_SWEEP_ATTACK;
         String cooldownText = "";
         if (showCooldown && isMelee) {
-            // getAttackCooldown() = 蓄力进度（0=刚攻击，1=满充能），即本次近战伤害的倍数。
-            // 在 MONITOR 读取时仍是「本次攻击」的蓄力值（服务端在事件后才重置冷却），故与伤害一致。
-            float cooldown = player.getAttackCooldown();
+            // 蓄力进度（0=刚攻击，1=满充能）。读取顺序：
+            // 1) LOWEST 捕获（冷却在本击结束才重置，必为真实值）；
+            // 2) 挥臂缓存；3) 实时兜底。
+            Float pre = preAttackCooldown.get(player.getUniqueId());
+            Float cached = swingCooldown.get(player.getUniqueId());
+            float cooldown = pre != null ? pre : (cached != null ? cached : player.getAttackCooldown());
             int percent = Math.round(cooldown * 100.0f);
             cooldownText = "  " + m.raw("messages.cooldown").replace("{percent}", String.valueOf(percent));
         }
